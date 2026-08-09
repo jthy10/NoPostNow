@@ -40,17 +40,17 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",
-    "@types/node": "^20",
+    "@types/node": "^26",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/web-push": "^3.6.4",
-    "eslint": "^9.39.5",
-    "eslint-config-next": "^16.2.12",
-    "firebase-tools": "^15.24.0",
+    "eslint": "^10.8.0",
+    "eslint-config-next": "^16.3.0",
+    "firebase-tools": "^15.26.0",
     "image-size": "^2.0.2",
     "tailwindcss": "^4.3.3",
-    "typescript": "^5"
+    "typescript": "^7"
   },
   "overrides": {
     "@opentelemetry/core": "2.10.0",
