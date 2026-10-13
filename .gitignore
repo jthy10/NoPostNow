@@ -48,6 +48,7 @@ next-env.d.ts
 /data/
 /nopostnow.json
 /.runtime/
+/relay-data/
 *.db
 *.db-shm
 *.db-wal

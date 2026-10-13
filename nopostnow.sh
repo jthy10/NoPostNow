@@ -1,8 +1,9 @@
 #!/usr/bin/env sh
 # NoPostNow launcher for Linux and macOS.
 #
-#   ./nopostnow.sh            set up on first run, then start the site
-#   ./nopostnow.sh setup      change settings
+#   ./nopostnow.sh            open the control panel (sets up on first run)
+#   ./nopostnow.sh start      run in the terminal, with no window
+#   ./nopostnow.sh setup      change settings from the terminal
 #   ./nopostnow.sh users ...  manage accounts (see: ./nopostnow.sh users)
 #
 # Needs Node.js 22.18 or newer. If it is missing, this script downloads an
@@ -66,13 +67,18 @@ fi
 case "${1:-}" in
   setup) shift; exec node scripts/setup.mjs "$@" ;;
   users) shift; exec node scripts/users.mjs "$@" ;;
+  relay) shift; exec node scripts/relay.mjs "$@" ;;
   "" | start)
-    # First run: nothing is configured yet, so walk through setup first.
+    # With a desktop, open the control panel. On a machine with no screen
+    # (a server reached over SSH), use the terminal instead.
+    if [ "${1:-}" != start ] && { [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || [ "$(uname -s)" = Darwin ]; }; then
+      exec node scripts/panel.mjs
+    fi
     if ! node scripts/configured.mjs; then
       node scripts/setup.mjs
     fi
-    [ -f .next/BUILD_ID ] || npm run build
     exec node scripts/start.mjs
     ;;
-  *) echo "Usage: ./nopostnow.sh [start | setup | users ...]" >&2; exit 1 ;;
+  panel) shift; exec node scripts/panel.mjs "$@" ;;
+  *) echo "Usage: ./nopostnow.sh [panel | start | setup | users ... | relay ...]" >&2; exit 1 ;;
 esac

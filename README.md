@@ -39,18 +39,24 @@ or clone it, then run the launcher from that folder:
 .\nopostnow.cmd
 ```
 
-The first run walks you through setup — the site's name and colour, where the
-photos are stored, the address and port, and your admin account — then starts
-the site. If Node.js isn't installed, the launcher downloads an official copy
-into the folder for its own use.
+A control panel opens. The first time, it asks a few questions — the site's
+name and colour, where the photos are stored, the address and port, and your
+admin account — then starts the site. After that the panel shows your site's
+addresses on the left and its live console on the right, with **Options** for
+changing anything later, and buttons for invite and password-reset links.
+
+If Node.js isn't installed, the launcher downloads an official copy into the
+folder for its own use. Nothing else is needed: the panel is a local page
+served by Node itself, reachable only from the same computer.
+
+On a machine with no screen (a server you reach over SSH), the launcher uses
+a terminal wizard instead. You can also ask for that with `./nopostnow.sh start`.
 
 Already have Node.js 22.18 or newer? The same thing by hand:
 
 ```bash
 npm ci
-npm run setup
-npm run build
-npm start
+npm run panel        # or, in the terminal only: npm run setup && npm start
 ```
 
 Then open the address it prints (by default <http://localhost:3000>).
@@ -59,19 +65,20 @@ Then open the address it prints (by default <http://localhost:3000>).
 
 Out of the box the site is reachable from your own network. To let friends in
 from anywhere — and to let phones install it and receive notifications — it
-needs a public `https://` address. The easiest way is a free Cloudflare Tunnel,
-which needs no router changes. **[docs/GOING-ONLINE.md](docs/GOING-ONLINE.md)**
-has step-by-step instructions.
+needs a public `https://` address. Two ways need no router changes: a free
+Cloudflare Tunnel on your own domain, or a NoPostNow relay, which gives your
+site an address without you owning a domain at all.
+**[docs/GOING-ONLINE.md](docs/GOING-ONLINE.md)** has step-by-step instructions.
 
 ## Day to day
 
 | Task | Command |
 | --- | --- |
-| Start the site | `./nopostnow.sh` or `npm start` |
-| Change the name, port, data folder… | `./nopostnow.sh setup` or `npm run setup` |
+| Start the site | `./nopostnow.sh` (control panel) or `./nopostnow.sh start` (terminal) |
+| Change the name, port, address, data folder… | **Options** in the panel, or `./nopostnow.sh setup` |
 | List accounts | `npm run users -- list` |
-| Make an invite link | `npm run users -- invite` (or Admin → Members) |
-| Someone forgot their password | `npm run users -- reset their@email` (or Admin → Members) |
+| Make an invite link | The panel, Admin → Members, or `npm run users -- invite` |
+| Someone forgot their password | The panel, Admin → Members, or `npm run users -- reset their@email` |
 | Locked out of the only admin account | `npm run users -- reset your@email` |
 
 The site sends no email. Invites and password resets are links that you pass
@@ -87,7 +94,8 @@ it.
 ### Updating
 
 Get the new code (`git pull`, or download and replace the files, keeping your
-data folder), then run `npm ci` and `npm run build`, and start it again.
+data folder), run `npm ci`, and start it again. The site rebuilds itself the
+first time a new version starts.
 
 ## How it works
 
@@ -102,7 +110,11 @@ side. There are no outside services:
   sessions and optional authenticator-app two-factor sign-in.
 - **Access control** — every read and write is checked on the server by
   [`server/rules.ts`](server/rules.ts).
-- **Settings** — `config.json` in the data folder, written by the setup wizard.
+- **Settings** — `config.json` in the data folder, written by the control
+  panel or the setup wizard.
+- **Relay** (optional) — [`relay/`](relay) holds a small server that gives
+  home-hosted sites a public address, and the connector a site uses to attach
+  to one. See [docs/RELAY.md](docs/RELAY.md) if you want to run a relay.
 
 See [SECURITY.md](SECURITY.md) for the security model and advice for hosts.
 

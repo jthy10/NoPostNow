@@ -2,7 +2,7 @@
 // The setup wizard. Run it once to create a site, or again at any time to
 // change its settings — existing answers are offered as the defaults and
 // nothing already stored is touched.
-import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -41,6 +41,8 @@ import {
   yellow,
 } from "./lib.mjs";
 import { printGoingOnline } from "./online.mjs";
+import { claimName } from "../relay/client.mjs";
+import { validateSiteName } from "../relay/protocol.mjs";
 
 const TERMS = `
   Before you start, the short version of what you are agreeing to:
@@ -99,6 +101,72 @@ function writable(dir) {
     return true;
   } catch {
     return false;
+  }
+}
+
+// A relay run for everyone to use. Empty until one exists; the wizard then
+// asks for the address of whichever relay the host has been given.
+const DEFAULT_RELAY = "";
+
+function slug(text) {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 30);
+}
+
+// How friends will reach the site: later, through a relay, or at an address
+// the host already has. Returns the public address and relay settings.
+async function chooseOnline({ before, siteName }) {
+  const none = { url: "", name: "", secret: "" };
+  const mode = await choose(
+    "  How will friends outside your home reach it?",
+    [
+      { label: "I'll sort that out later", hint: "it works on your own network meanwhile", value: "later" },
+      { label: "Through a NoPostNow relay", hint: "easiest — no domain, no router changes", value: "relay" },
+      { label: "I have my own address", hint: "a domain, Cloudflare Tunnel or reverse proxy", value: "own" },
+    ],
+    before.relay.url ? 1 : before.publicUrl ? 2 : 0
+  );
+  if (mode === "later") return { publicUrl: "", relay: none };
+  if (mode === "own") {
+    const publicUrl = (
+      await ask("  Public address", {
+        fallback: before.relay.url ? "" : before.publicUrl,
+        check: (v) => (/^https?:\/\/[^\s/]+/.test(v) ? null : "Start with https:// — for example https://photos.example.com"),
+      })
+    ).replace(/\/+$/, "");
+    return { publicUrl, relay: none };
+  }
+
+  console.log(
+    dim(
+      "  A relay passes visitors through to this computer. Its operator could\n  technically see what passes through, so only use one run by someone you trust."
+    )
+  );
+  const url = (
+    await ask("  Relay address", {
+      fallback: before.relay.url || DEFAULT_RELAY,
+      check: (v) => (/^https?:\/\/[^\s/]+$/.test(v.replace(/\/+$/, "")) ? null : "Enter the address you were given, for example https://sites.example.com"),
+    })
+  ).replace(/\/+$/, "");
+  const key = await ask(`  Access key ${dim("(leave empty if the relay doesn't need one)")}`);
+  for (;;) {
+    const name = await ask("  Name for your site's address", {
+      fallback: before.relay.name || slug(siteName),
+      check: validateSiteName,
+    });
+    // Keep the secret when re-running setup for the same name, or the relay
+    // would treat this site as a stranger trying to take its own name.
+    const secret =
+      before.relay.url === url && before.relay.name === name && before.relay.secret
+        ? before.relay.secret
+        : crypto.randomBytes(32).toString("base64url");
+    try {
+      const publicUrl = await claimName(url, { name, secret, key });
+      console.log(green(`  Reserved. Your site will be at ${publicUrl}`));
+      return { publicUrl, relay: { url, name, secret } };
+    } catch (err) {
+      console.log(red(`  ${err.message}`));
+      if (!(await confirm("  Try a different name?", true))) return { publicUrl: before.publicUrl, relay: before.relay };
+    }
   }
 }
 
@@ -212,12 +280,9 @@ async function main() {
     if (await confirm(yellow(`  Port ${port} is in use right now (maybe by this site). Use it anyway?`), existing && port === before.port)) break;
   }
 
-  const publicUrl = (
-    await ask(`  Public address, if you already have one ${dim("(leave empty for now)")}`, {
-      fallback: before.publicUrl,
-      check: (v) => (!v || /^https?:\/\/[^\s/]+/.test(v) ? null : "Start with https:// — for example https://photos.example.com"),
-    })
-  ).replace(/\/+$/, "");
+  const online = await chooseOnline({ before, siteName });
+  if (online === null) return 1;
+  const { publicUrl, relay } = online;
 
   // --- group rules -----------------------------------------------------------
   heading(5, "Your group");
@@ -269,6 +334,7 @@ async function main() {
     dailyMoment,
     termsAcceptedAt,
     vapid,
+    relay,
   });
   writePointer(appDir, path.relative(appDir, dataDir).startsWith("..") ? dataDir : path.relative(appDir, dataDir) || ".");
 
@@ -292,18 +358,6 @@ async function main() {
   }
 
   console.log(`\n${green(bold("Setup saved."))} ${dim(`Settings are in ${path.join(dataDir, "config.json")}`)}`);
-
-  // --- build -----------------------------------------------------------------
-  const built = fs.existsSync(path.join(appDir, ".next", "BUILD_ID"));
-  if (!built && !process.argv.includes("--no-build")) {
-    console.log(`\n${bold("Building the site")} ${dim("(one time, about a minute)…")}`);
-    const nextBin = createRequire(import.meta.url).resolve("next/dist/bin/next");
-    const build = spawnSync(process.execPath, [nextBin, "build"], { cwd: appDir, stdio: "inherit" });
-    if (build.status !== 0) {
-      console.log(red("\nThe build failed. Fix the error above, then run: npm run build"));
-      return 1;
-    }
-  }
 
   printGoingOnline({ siteName, host, port, publicUrl, ips });
   return 0;

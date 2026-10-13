@@ -16,14 +16,16 @@
     "node": ">=22.18"
   },
   "scripts": {
+    "panel": "node scripts/panel.mjs",
     "setup": "node scripts/setup.mjs",
+    "relay": "node scripts/relay.mjs",
     "dev": "node scripts/start.mjs --dev",
     "build": "next build",
     "start": "node scripts/start.mjs",
     "users": "node scripts/users.mjs",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/core.test.mjs",
+    "test": "node --test tests/core.test.mjs tests/relay.test.mjs",
     "test:e2e": "node tests/e2e.mjs",
     "check": "npm run lint && npm run typecheck && npm run test && npm run build"
   },

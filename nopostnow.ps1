@@ -1,7 +1,8 @@
 # NoPostNow launcher for Windows.
 #
-#   .\nopostnow.cmd            set up on first run, then start the site
-#   .\nopostnow.cmd setup      change settings
+#   .\nopostnow.cmd            open the control panel (sets up on first run)
+#   .\nopostnow.cmd start      run in the terminal, with no window
+#   .\nopostnow.cmd setup      change settings from the terminal
 #   .\nopostnow.cmd users ...  manage accounts
 #
 # Needs Node.js 22.18 or newer. If it is missing, this script downloads an
@@ -54,25 +55,23 @@ if (-not (Test-Path "node_modules")) {
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-$command = if ($args.Count -gt 0) { $args[0] } else { "start" }
+$command = if ($args.Count -gt 0) { $args[0] } else { "panel" }
 $rest = if ($args.Count -gt 1) { $args[1..($args.Count - 1)] } else { @() }
 
 switch ($command) {
+  "panel" { node scripts/panel.mjs @rest; exit $LASTEXITCODE }
   "setup" { node scripts/setup.mjs @rest; exit $LASTEXITCODE }
   "users" { node scripts/users.mjs @rest; exit $LASTEXITCODE }
+  "relay" { node scripts/relay.mjs @rest; exit $LASTEXITCODE }
   "start" {
-    # First run: nothing is configured yet, so walk through setup first.
+    # Terminal only, no window. First run walks through setup.
     node scripts/configured.mjs
     if ($LASTEXITCODE -ne 0) {
       node scripts/setup.mjs
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
-    if (-not (Test-Path ".next\BUILD_ID")) {
-      npm run build
-      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    }
     node scripts/start.mjs
     exit $LASTEXITCODE
   }
-  default { Write-Host "Usage: .\nopostnow.cmd [start | setup | users ...]"; exit 1 }
+  default { Write-Host "Usage: .\nopostnow.cmd [panel | start | setup | users ... | relay ...]"; exit 1 }
 }
