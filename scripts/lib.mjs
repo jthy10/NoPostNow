@@ -107,3 +107,28 @@ export async function choose(question, options, fallbackIndex = 0) {
 export function exists(file) {
   return fs.existsSync(file);
 }
+
+// --- the production build ----------------------------------------------------
+
+const buildStamp = path.join(appDir, ".next", "nopostnow-build");
+
+function appVersion() {
+  return JSON.parse(fs.readFileSync(path.join(appDir, "package.json"), "utf8")).version;
+}
+
+// True when the site has been built from this version of the code. After an
+// update the old build is stale and must be made again.
+export function buildIsCurrent() {
+  try {
+    return (
+      fs.existsSync(path.join(appDir, ".next", "BUILD_ID")) &&
+      fs.readFileSync(buildStamp, "utf8").trim() === appVersion()
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function stampBuild() {
+  fs.writeFileSync(buildStamp, appVersion() + "\n");
+}

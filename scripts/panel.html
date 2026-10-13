@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NoPostNow</title>
+<style>
+  :root {
+    --accent: #ff3b5c;
+    --canvas: #0a0a0a; --panel: #111; --field: #1a1a1a; --line: #242424; --edge: #333;
+    --text: #f2f2f2; --body: #c8c8c8; --mut: #8a8a8a; --dim: #5c5c5c;
+    --ok: #2ecc71; --warn: #d4a017; --bad: #e74c3c;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--canvas); color: var(--text);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column;
+  }
+  button, input, select { font: inherit; color: inherit; }
+  header {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  h1 { font-size: 17px; font-weight: 800; letter-spacing: -0.3px; margin: 0; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 99px;
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px;
+    background: var(--field); color: var(--mut);
+  }
+  .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .pill.running { color: var(--ok); } .pill.starting, .pill.building { color: var(--warn); } .pill.stopped { color: var(--bad); }
+  .spacer { flex: 1; }
+  .btn {
+    border: 1px solid var(--edge); background: transparent; border-radius: 8px; padding: 7px 13px;
+    font-size: 12.5px; font-weight: 700; cursor: pointer; white-space: nowrap;
+  }
+  .btn:hover:not(:disabled) { border-color: var(--mut); }
+  .btn:disabled { opacity: 0.35; cursor: default; }
+  .btn.primary { background: var(--text); color: #000; border-color: var(--text); }
+  .btn.small { padding: 4px 9px; font-size: 11.5px; }
+  main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(280px, 360px) 1fr; }
+  aside { border-right: 1px solid var(--line); overflow-y: auto; padding: 6px 16px 16px; }
+  .group { padding: 14px 0; border-bottom: 1px solid var(--line); }
+  .group:last-child { border-bottom: 0; }
+  .label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.3px; color: var(--dim); margin-bottom: 5px; }
+  .value { color: var(--body); word-break: break-all; }
+  .value a { color: var(--text); text-decoration: none; border-bottom: 1px solid var(--edge); }
+  .value a:hover { border-color: var(--accent); }
+  .hint { font-size: 12px; color: var(--mut); margin-top: 5px; }
+  .hint.warn { color: var(--warn); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 9px; }
+  section.console { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .console-head {
+    display: flex; align-items: center; gap: 10px; padding: 9px 16px; border-bottom: 1px solid var(--line);
+    font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.3px; color: var(--dim);
+  }
+  #log {
+    flex: 1; min-height: 0; overflow-y: auto; margin: 0; padding: 12px 16px;
+    font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--body);
+    white-space: pre-wrap; word-break: break-word;
+  }
+  #log .t { color: var(--dim); margin-right: 10px; user-select: none; }
+  #log .err { color: #ff8f85; } #log .info { color: var(--text); }
+  dialog {
+    background: var(--panel); color: var(--text); border: 1px solid var(--edge); border-radius: 14px;
+    padding: 0; width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 32px);
+  }
+  dialog::backdrop { background: rgba(0, 0, 0, 0.7); }
+  dialog form { display: flex; flex-direction: column; max-height: calc(100vh - 34px); }
+  .dlg-head { padding: 16px 20px; border-bottom: 1px solid var(--line); }
+  .dlg-head h2 { margin: 0; font-size: 16px; font-weight: 800; }
+  .dlg-head p { margin: 4px 0 0; font-size: 12.5px; color: var(--mut); }
+  .dlg-body { padding: 4px 20px 16px; overflow-y: auto; }
+  .dlg-foot { display: flex; align-items: center; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--line); }
+  fieldset { border: 0; padding: 0; margin: 18px 0 0; }
+  legend { padding: 0; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.3px; color: var(--accent); margin-bottom: 10px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .full { grid-column: 1 / -1; }
+  label.f { display: block; }
+  label.f > span { display: block; font-size: 11.5px; font-weight: 600; color: var(--mut); margin-bottom: 4px; }
+  input[type=text], input[type=email], input[type=password], input[type=number], input[type=time], select {
+    width: 100%; background: var(--field); border: 1px solid var(--edge); border-radius: 8px; padding: 8px 10px; outline: none;
+  }
+  input:focus, select:focus { border-color: var(--mut); }
+  input[type=color] { width: 44px; height: 34px; padding: 2px; background: var(--field); border: 1px solid var(--edge); border-radius: 8px; }
+  .check { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; color: var(--body); margin-top: 8px; }
+  .check input { margin-top: 3px; }
+  .terms { background: var(--field); border: 1px solid var(--edge); border-radius: 8px; padding: 10px 14px; font-size: 12.5px; color: var(--body); }
+  .terms ol { margin: 6px 0; padding-left: 18px; } .terms li { margin: 4px 0; }
+  .error { color: #ff8f85; font-size: 12.5px; flex: 1; }
+  .linkbox { background: var(--field); border: 1px solid var(--edge); border-radius: 8px; padding: 10px 12px; font: 12px ui-monospace, Menlo, Consolas, monospace; word-break: break-all; user-select: all; }
+  [hidden] { display: none !important; }
+  @media (max-width: 760px) { main { grid-template-columns: 1fr; grid-template-rows: auto 1fr; } aside { border-right: 0; border-bottom: 1px solid var(--line); max-height: 45vh; } .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="name">NoPostNow</h1>
+  <span id="status" class="pill stopped">Stopped</span>
+  <span class="spacer"></span>
+  <button class="btn primary" id="toggle">Start</button>
+  <button class="btn" id="restart">Restart</button>
+  <button class="btn" id="open">Open site</button>
+  <button class="btn" id="options">Options</button>
+</header>
+
+<main>
+  <aside>
+    <div class="group">
+      <div class="label">On this computer</div>
+      <div class="value" id="local"></div>
+    </div>
+    <div class="group">
+      <div class="label">On your network</div>
+      <div class="value" id="lan"></div>
+    </div>
+    <div class="group">
+      <div class="label">Public address</div>
+      <div class="value" id="public"></div>
+      <div class="hint" id="publicHint"></div>
+    </div>
+    <div class="group">
+      <div class="label">Members</div>
+      <div class="value" id="members"></div>
+      <div class="hint" id="signupHint"></div>
+      <div class="row">
+        <button class="btn small" id="invite">Make invite link</button>
+        <button class="btn small" id="reset">Password reset link</button>
+      </div>
+    </div>
+    <div class="group">
+      <div class="label">Data folder</div>
+      <div class="value" id="data"></div>
+      <div class="hint">Photos, accounts and settings. Back this folder up.</div>
+    </div>
+    <div class="group">
+      <div class="label">Listening on</div>
+      <div class="value" id="listen"></div>
+    </div>
+    <div class="group">
+      <div class="label">Version</div>
+      <div class="value" id="version"></div>
+      <div class="row"><button class="btn small" id="quit">Stop and quit</button></div>
+    </div>
+  </aside>
+
+  <section class="console">
+    <div class="console-head">
+      <span>Console</span><span class="spacer"></span>
+      <button class="btn small" id="copyLog">Copy</button>
+      <button class="btn small" id="clearLog">Clear</button>
+    </div>
+    <pre id="log" aria-live="polite"></pre>
+  </section>
+</main>
+
+<dialog id="optionsDialog">
+  <form id="optionsForm" novalidate>
+    <div class="dlg-head">
+      <h2 id="optTitle">Options</h2>
+      <p id="optIntro">Changes to the address or port restart the site.</p>
+    </div>
+    <div class="dlg-body">
+      <fieldset id="termsSet" hidden>
+        <legend>Terms of use</legend>
+        <div class="terms">
+          <ol>
+            <li>NoPostNow is free, open-source software under the MIT License. It comes with no warranty; you run it at your own risk.</li>
+            <li>You are the host. The photos, messages and accounts on your site live on your computer and are your responsibility — including backups, keeping the machine secure, and deciding who gets an invite.</li>
+            <li>You are responsible for what is shared on your site and for following the law where you and your members live.</li>
+            <li>The authors of NoPostNow do not operate your site, cannot see its contents, and cannot recover a lost password or a deleted photo for you.</li>
+          </ol>
+        </div>
+        <label class="check"><input type="checkbox" id="acceptTerms"> <span>I accept these terms.</span></label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Name and look</legend>
+        <div class="grid">
+          <label class="f"><span>Site name</span><input type="text" id="siteName" maxlength="40"></label>
+          <label class="f"><span>Accent colour</span><input type="color" id="accent"></label>
+          <label class="f full"><span>Tagline (shown on the login page)</span><input type="text" id="tagline" maxlength="120"></label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Address and port</legend>
+        <div class="grid">
+          <label class="f"><span>Who can open the site directly</span>
+            <select id="hostMode">
+              <option value="0.0.0.0">This computer and my network</option>
+              <option value="127.0.0.1">Only this computer</option>
+              <option value="custom">A specific IP address…</option>
+            </select>
+          </label>
+          <label class="f"><span>Port</span><input type="number" id="port" min="1" max="65535"></label>
+          <label class="f full" id="hostCustomWrap" hidden><span>IP address to listen on</span><input type="text" id="hostCustom" placeholder="192.168.1.20"></label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Getting online</legend>
+        <label class="f"><span>How friends outside your home reach it</span>
+          <select id="online">
+            <option value="later">Not yet — only my own network for now</option>
+            <option value="relay">Through a NoPostNow relay (no domain needed)</option>
+            <option value="own">I have my own address (domain, tunnel or proxy)</option>
+          </select>
+        </label>
+        <div class="grid" id="relayFields" hidden style="margin-top:12px">
+          <label class="f full"><span>Relay address</span><input type="text" id="relayUrl" placeholder="https://sites.example.com"></label>
+          <label class="f"><span>Name for your address</span><input type="text" id="relayName" placeholder="lake-house"></label>
+          <label class="f"><span>Access key (if the relay needs one)</span><input type="text" id="relayKey" autocomplete="off"></label>
+          <div class="hint full">A relay passes visitors through to this computer. Whoever runs it could see what passes through, so use one run by someone you trust.</div>
+        </div>
+        <div id="ownFields" hidden style="margin-top:12px">
+          <label class="f"><span>Public address or hostname</span><input type="text" id="publicUrl" placeholder="https://photos.example.com"></label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Your group</legend>
+        <div class="grid">
+          <label class="f"><span>Who can sign up</span>
+            <select id="signup">
+              <option value="invite">People with an invite link</option>
+              <option value="open">Anyone who finds the site</option>
+              <option value="closed">Nobody</option>
+            </select>
+          </label>
+          <label class="f"><span>Time zone</span><input type="text" id="timeZone" placeholder="America/New_York"></label>
+        </div>
+        <label class="check"><input type="checkbox" id="momentOn"> <span>Daily moment — remind everyone to post at one time each day; photos posted on that minute earn a badge.</span></label>
+        <div class="grid" id="momentFields" hidden style="margin-top:10px">
+          <label class="f"><span>Time</span><input type="time" id="momentTime"></label>
+          <label class="f"><span>Special date (MM-DD, optional)</span><input type="text" id="specialDate" maxlength="5" placeholder="07-04"></label>
+          <label class="check full"><input type="checkbox" id="bothHalves"> <span>Morning and evening both count</span></label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Storage</legend>
+        <label class="f"><span>Data folder</span><input type="text" id="dataDir"></label>
+      </fieldset>
+
+      <fieldset id="adminSet" hidden>
+        <legend>Your admin account</legend>
+        <div class="hint" style="margin:0 0 10px">This is how you sign in. The site never sends email, so any address you'll remember works.</div>
+        <div class="grid">
+          <label class="f"><span>Email</span><input type="email" id="adminEmail" autocomplete="off"></label>
+          <label class="f"><span>Username (what friends see)</span><input type="text" id="adminUsername" maxlength="24" autocomplete="off"></label>
+          <label class="f full"><span>Password (8 or more characters)</span><input type="password" id="adminPassword" autocomplete="new-password"></label>
+        </div>
+      </fieldset>
+    </div>
+    <div class="dlg-foot">
+      <span class="error" id="optError"></span>
+      <button type="button" class="btn" id="optCancel">Cancel</button>
+      <button type="submit" class="btn primary" id="optSave">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="linkDialog">
+  <form method="dialog">
+    <div class="dlg-head"><h2 id="linkTitle">Link</h2><p id="linkIntro"></p></div>
+    <div class="dlg-body">
+      <div id="resetAsk" hidden style="margin-top:14px">
+        <label class="f"><span>The member's email</span><input type="email" id="resetEmail"></label>
+      </div>
+      <div class="linkbox" id="linkBox" hidden style="margin-top:14px"></div>
+    </div>
+    <div class="dlg-foot">
+      <span class="error" id="linkError"></span>
+      <button type="button" class="btn" id="linkMake" hidden>Make link</button>
+      <button type="button" class="btn" id="linkCopy" hidden>Copy</button>
+      <button class="btn primary">Done</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let state = null;
+let confirmMove = false;
+
+async function post(path, body) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-panel": "1" },
+    body: JSON.stringify(body || {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(data.error || "Something went wrong."), data);
+  return data;
+}
+
+function link(url) {
+  const a = document.createElement("a");
+  a.href = url; a.textContent = url; a.target = "_blank"; a.rel = "noreferrer";
+  return a;
+}
+
+function fill(el, nodes) {
+  el.replaceChildren(...nodes.flatMap((n, i) => (i ? [document.createElement("br"), n] : [n])));
+}
+
+const STATUS = { stopped: "Stopped", building: "Building", starting: "Starting", running: "Running" };
+
+function render() {
+  const s = state, c = s.config;
+  document.documentElement.style.setProperty("--accent", c.accent);
+  document.title = c.siteName + " — control panel";
+  $("name").textContent = c.siteName;
+  $("status").textContent = STATUS[s.status];
+  $("status").className = "pill " + s.status;
+
+  const running = s.status === "running";
+  $("toggle").textContent = s.status === "stopped" ? "Start" : "Stop";
+  $("toggle").disabled = !s.configured;
+  $("restart").disabled = s.status === "stopped" || !s.configured;
+  $("open").disabled = !running;
+  $("invite").disabled = $("reset").disabled = !s.configured;
+
+  fill($("local"), running ? [link(s.localUrl)] : [document.createTextNode(s.localUrl)]);
+  if (c.host === "127.0.0.1") $("lan").textContent = "Off — only this computer can open it.";
+  else if (s.lanUrls.length) fill($("lan"), s.lanUrls.map((u) => (running ? link(u) : document.createTextNode(u))));
+  else $("lan").textContent = "http://" + c.host + ":" + c.port;
+
+  const hint = $("publicHint");
+  hint.className = "hint";
+  if (c.publicUrl) {
+    fill($("public"), [link(c.publicUrl)]);
+    if (c.online === "relay") {
+      const r = s.relay.state;
+      hint.textContent = r === "up" ? "Connected through the relay." : r === "off" ? "Through a relay — connects when the site is running." : "Relay not connected" + (s.relay.detail ? " (" + s.relay.detail + ")" : "") + " — retrying.";
+      if (r === "down" || r === "connecting") hint.className = "hint warn";
+    } else hint.textContent = "Your own address. Make sure it forwards to the address above.";
+  } else {
+    $("public").textContent = "Not online yet";
+    hint.textContent = "Friends outside your home can't reach it. Open Options → Getting online.";
+  }
+
+  $("members").textContent = s.members + (s.members === 1 ? " account" : " accounts") + " · " + s.admins + (s.admins === 1 ? " admin" : " admins");
+  $("signupHint").textContent = { invite: "New people join with an invite link.", open: "Anyone who finds the site can sign up.", closed: "Sign-ups are closed." }[c.signup];
+  $("data").textContent = s.dataDir;
+  $("listen").textContent = c.host + " : " + c.port;
+  $("version").textContent = "NoPostNow " + s.version + " · Node " + s.node;
+}
+
+// --- console ---
+const logEl = $("log");
+function addLog(entry) {
+  const stick = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 40;
+  const line = document.createElement("div");
+  if (entry.kind !== "out") line.className = entry.kind;
+  const time = document.createElement("span");
+  time.className = "t";
+  time.textContent = new Date(entry.at).toLocaleTimeString([], { hour12: false });
+  line.append(time, entry.text);
+  logEl.append(line);
+  while (logEl.childElementCount > 800) logEl.firstElementChild.remove();
+  if (stick) logEl.scrollTop = logEl.scrollHeight;
+}
+let lastLog = 0;
+const events = new EventSource("/api/events");
+events.addEventListener("state", (e) => {
+  const first = state === null;
+  state = JSON.parse(e.data);
+  render();
+  if (first && !state.configured) openOptions();
+});
+events.addEventListener("log", (e) => {
+  const entry = JSON.parse(e.data);
+  if (entry.id <= lastLog) return; // replayed after a reconnect
+  lastLog = entry.id;
+  addLog(entry);
+});
+$("clearLog").onclick = () => logEl.replaceChildren();
+$("copyLog").onclick = () => navigator.clipboard.writeText(logEl.innerText).catch(() => {});
+
+// --- header buttons ---
+$("toggle").onclick = () => post(state.status === "stopped" ? "/api/start" : "/api/stop").catch(() => {});
+$("restart").onclick = () => post("/api/restart").catch(() => {});
+$("open").onclick = () => window.open(state.localUrl, "_blank", "noreferrer");
+$("quit").onclick = async () => {
+  if (!confirm("Stop the site and close the control panel?")) return;
+  await post("/api/quit").catch(() => {});
+  document.body.innerHTML = '<p style="margin:auto;color:#8a8a8a">Stopped. You can close this window.</p>';
+};
+
+// --- options ---
+const dlg = $("optionsDialog");
+function syncVisibility() {
+  $("hostCustomWrap").hidden = $("hostMode").value !== "custom";
+  $("relayFields").hidden = $("online").value !== "relay";
+  $("ownFields").hidden = $("online").value !== "own";
+  $("momentFields").hidden = !$("momentOn").checked;
+}
+for (const id of ["hostMode", "online", "momentOn"]) $(id).addEventListener("change", syncVisibility);
+
+function openOptions() {
+  const s = state, c = s.config, first = !s.configured;
+  confirmMove = false;
+  $("optTitle").textContent = first ? "Set up your site" : "Options";
+  $("optIntro").textContent = first
+    ? "A private photo feed for you and your friends, running on this computer. This takes about two minutes."
+    : "Changes to the address, port or data folder restart the site.";
+  $("optSave").textContent = first ? "Create my site" : "Save";
+  $("optCancel").hidden = first;
+  $("termsSet").hidden = !first;
+  $("adminSet").hidden = s.admins > 0;
+  $("optError").textContent = "";
+  $("siteName").value = c.siteName; $("tagline").value = c.tagline; $("accent").value = c.accent;
+  const preset = c.host === "0.0.0.0" || c.host === "127.0.0.1";
+  $("hostMode").value = preset ? c.host : "custom";
+  $("hostCustom").value = preset ? (s.lanIps[0] || "") : c.host;
+  $("port").value = c.port;
+  $("online").value = c.online;
+  $("relayUrl").value = c.relayUrl; $("relayName").value = c.relayName; $("relayKey").value = "";
+  $("publicUrl").value = c.online === "own" ? c.publicUrl : "";
+  $("signup").value = c.signup;
+  $("timeZone").value = first ? s.systemZone : c.timeZone;
+  $("momentOn").checked = c.dailyMoment.enabled; $("momentTime").value = c.dailyMoment.time;
+  $("bothHalves").checked = c.dailyMoment.bothHalves; $("specialDate").value = c.dailyMoment.specialDate;
+  $("dataDir").value = s.dataDir;
+  syncVisibility();
+  dlg.showModal();
+}
+$("options").onclick = openOptions;
+$("optCancel").onclick = () => dlg.close();
+// The first-run form can't be dismissed: there is nothing to run without it.
+dlg.addEventListener("cancel", (e) => { if (!state.configured) e.preventDefault(); });
+
+$("optionsForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const save = $("optSave");
+  save.disabled = true;
+  $("optError").textContent = "";
+  try {
+    await post("/api/options", {
+      acceptTerms: $("acceptTerms").checked,
+      siteName: $("siteName").value, tagline: $("tagline").value, accent: $("accent").value,
+      host: $("hostMode").value === "custom" ? $("hostCustom").value : $("hostMode").value,
+      port: Number($("port").value),
+      online: $("online").value,
+      relayUrl: $("relayUrl").value, relayName: $("relayName").value, relayKey: $("relayKey").value,
+      publicUrl: $("publicUrl").value,
+      signup: $("signup").value, timeZone: $("timeZone").value,
+      dailyMoment: { enabled: $("momentOn").checked, time: $("momentTime").value, bothHalves: $("bothHalves").checked, specialDate: $("specialDate").value.trim() },
+      dataDir: $("dataDir").value,
+      confirmMove,
+      admin: { email: $("adminEmail").value, username: $("adminUsername").value, password: $("adminPassword").value },
+    });
+    $("adminPassword").value = "";
+    dlg.close();
+  } catch (err) {
+    if (err.needsConfirm === "confirmMove") {
+      confirmMove = true;
+      $("optError").textContent = err.message + " Press Save again to switch.";
+    } else $("optError").textContent = err.message;
+  } finally {
+    save.disabled = false;
+  }
+});
+
+// --- invite and reset links ---
+const linkDlg = $("linkDialog");
+function showLink(url) {
+  $("linkBox").textContent = url; $("linkBox").hidden = false; $("linkCopy").hidden = false;
+}
+function openLink(title, intro, askEmail) {
+  $("linkTitle").textContent = title; $("linkIntro").textContent = intro;
+  $("linkError").textContent = ""; $("linkBox").hidden = true; $("linkCopy").hidden = true;
+  $("resetAsk").hidden = !askEmail; $("linkMake").hidden = !askEmail; $("resetEmail").value = "";
+  linkDlg.showModal();
+}
+$("invite").onclick = async () => {
+  openLink("Invite link", "Send this to one friend. It works once and expires in 7 days.", false);
+  try { showLink((await post("/api/invite", { uses: 1 })).url); } catch (err) { $("linkError").textContent = err.message; }
+};
+$("reset").onclick = () => openLink("Password reset link", "For a member who forgot their password. The link works once and expires in 24 hours.", true);
+$("linkMake").onclick = async () => {
+  $("linkError").textContent = "";
+  try { showLink((await post("/api/reset", { email: $("resetEmail").value })).url); } catch (err) { $("linkError").textContent = err.message; }
+};
+$("linkCopy").onclick = () => navigator.clipboard.writeText($("linkBox").textContent).then(() => { $("linkCopy").textContent = "Copied"; setTimeout(() => ($("linkCopy").textContent = "Copy"), 1500); }).catch(() => {});
+</script>
+</body>
+</html>

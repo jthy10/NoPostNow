@@ -2,13 +2,12 @@
 // Starts the site using the address and port chosen during setup.
 //   npm start        production (run `npm run build` first)
 //   npm run dev      development, with live reload
-import { spawn } from "node:child_process";
-import fs from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
 import os from "node:os";
-import path from "node:path";
 import { createRequire } from "node:module";
 import { hasConfig, readConfig, resolveDataDir } from "../server/core/config.ts";
-import { appDir, bold, cyan, dim, red, yellow } from "./lib.mjs";
+import { startTunnel } from "../relay/client.mjs";
+import { appDir, bold, buildIsCurrent, cyan, dim, green, red, stampBuild, yellow } from "./lib.mjs";
 
 const dev = process.argv.includes("--dev");
 const dataDir = resolveDataDir(appDir);
@@ -17,9 +16,15 @@ if (!hasConfig(dataDir)) {
   console.error(red("This copy hasn't been set up yet.") + ` Run ${bold("npm run setup")} first.`);
   process.exit(1);
 }
-if (!dev && !fs.existsSync(path.join(appDir, ".next", "BUILD_ID"))) {
-  console.error(red("The site hasn't been built yet.") + ` Run ${bold("npm run build")} first.`);
-  process.exit(1);
+const nextBin = createRequire(import.meta.url).resolve("next/dist/bin/next");
+if (!dev && !buildIsCurrent()) {
+  console.log(`\n  ${bold("Building the site")} ${dim("(about a minute, once per version)…")}`);
+  const build = spawnSync(process.execPath, [nextBin, "build"], { cwd: appDir, stdio: "inherit" });
+  if (build.status !== 0) {
+    console.error(red("\nThe build failed. Fix the error above and start again."));
+    process.exit(1);
+  }
+  stampBuild();
 }
 
 const config = readConfig(dataDir);
@@ -42,7 +47,6 @@ if (config.publicUrl) console.log(`  ${dim("Public address:")}    ${cyan(config.
 else console.log(`  ${yellow("Not online yet.")} ${dim("See docs/GOING-ONLINE.md to share it with friends.")}`);
 console.log(`  ${dim("Data folder:")}       ${dataDir}\n`);
 
-const nextBin = createRequire(import.meta.url).resolve("next/dist/bin/next");
 const child = spawn(
   process.execPath,
   [nextBin, dev ? "dev" : "start", "-p", String(config.port), "-H", config.host],
@@ -52,5 +56,23 @@ const child = spawn(
     env: { ...process.env, NOPOSTNOW_DATA_DIR: dataDir },
   }
 );
+
+// Published through a relay: keep the site attached to it while it runs.
+if (config.relay.url && config.relay.name && config.relay.secret) {
+  startTunnel({
+    relayUrl: config.relay.url,
+    name: config.relay.name,
+    secret: config.relay.secret,
+    localPort: config.port,
+    localHost: config.host === "0.0.0.0" ? "127.0.0.1" : config.host,
+    onStatus: (state, detail) =>
+      console.log(
+        state === "up"
+          ? `  ${green("Relay connected")} ${dim("— the public address is live")}`
+          : `  ${yellow("Relay not connected")} ${dim(`(${detail}) — retrying`)}`
+      ),
+  });
+}
+
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => child.kill(signal));
 child.on("exit", (code) => process.exit(code ?? 0));
