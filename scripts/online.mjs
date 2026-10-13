@@ -30,10 +30,7 @@ ${publicUrl ? `\n  You entered ${cyan(publicUrl)} as the public address.\n` : ""
         ${cyan(local)}. No router changes, and your home IP stays hidden.
      3. Run ${cyan("npm run setup")} again and enter the address as the public address.
 
-  ${bold("C. A NoPostNow relay")} ${dim("— no domain needed, if someone runs one for you")}
-     Run ${cyan("npm run setup")} again, choose the relay option, and enter its address.
-
-  ${bold("D. Your own reverse proxy")} ${dim("— if you already run Caddy, nginx or Tailscale")}
+  ${bold("C. Your own reverse proxy")} ${dim("— if you already run Caddy, nginx or Tailscale")}
      Point it at ${cyan(local)} and let it handle https.
 
   Step-by-step instructions for each: ${cyan("docs/GOING-ONLINE.md")}

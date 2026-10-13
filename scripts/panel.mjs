@@ -36,8 +36,6 @@ import {
   getAccountByEmail,
   listAccounts,
 } from "../server/core/accounts.ts";
-import { claimName, startTunnel } from "../relay/client.mjs";
-import { validateSiteName } from "../relay/protocol.mjs";
 import { appDir, buildIsCurrent, stampBuild } from "./lib.mjs";
 
 const require = createRequire(import.meta.url);
@@ -51,9 +49,6 @@ let dataDir = resolveDataDir(appDir);
 let status = "stopped"; // stopped | building | starting | running
 let child = null;
 let wanted = false; // whether the site is meant to be running
-let stopTunnel = null;
-let relayState = "off"; // off | connecting | up | down
-let relayDetail = "";
 
 const LOG_LIMIT = 800;
 const logs = [];
@@ -104,24 +99,18 @@ function memberCounts() {
 
 function state() {
   const config = currentConfig();
-  const { vapid, relay, ...shown } = config;
+  const { vapid, ...shown } = config;
   return {
     configured: configured(),
     status,
     version,
     node: process.versions.node,
     dataDir,
-    config: {
-      ...shown,
-      online: relay.url ? "relay" : config.publicUrl ? "own" : "later",
-      relayUrl: relay.url,
-      relayName: relay.name,
-    },
+    config: shown,
     pushReady: Boolean(vapid.publicKey && vapid.privateKey),
     localUrl: `http://localhost:${config.port}`,
     lanUrls: config.host === "0.0.0.0" ? lanAddresses().map((ip) => `http://${ip}:${config.port}`) : [],
     lanIps: lanAddresses(),
-    relay: { state: relayState, detail: relayDetail },
     systemZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
     ...memberCounts(),
   };
@@ -185,12 +174,10 @@ async function startSite() {
     if (status === "starting" && /Ready/.test(String(chunk))) {
       setStatus("running");
       log(`${config.siteName} is running at http://localhost:${config.port}`, "info");
-      connectRelay(config);
     }
   });
   const code = await exited;
   if (child === proc) child = null;
-  disconnectRelay();
   if (wanted) log(`The site stopped unexpectedly (exit code ${code}).`, "err");
   wanted = false;
   setStatus("stopped");
@@ -198,7 +185,6 @@ async function startSite() {
 
 function stopSite() {
   wanted = false;
-  disconnectRelay();
   if (!child) return Promise.resolve();
   const proc = child;
   log("Stopping…", "info");
@@ -208,38 +194,6 @@ function stopSite() {
     // A process that ignores the polite request gets a firm one.
     setTimeout(() => proc.exitCode === null && proc.kill("SIGKILL"), 5000).unref();
   });
-}
-
-function connectRelay(config) {
-  disconnectRelay();
-  if (!config.relay.url || !config.relay.name || !config.relay.secret) return;
-  relayState = "connecting";
-  stopTunnel = startTunnel({
-    relayUrl: config.relay.url,
-    name: config.relay.name,
-    secret: config.relay.secret,
-    localPort: config.port,
-    localHost: config.host === "0.0.0.0" ? "127.0.0.1" : config.host,
-    onStatus: (next, detail = "") => {
-      if (next !== relayState) {
-        log(
-          next === "up" ? `Relay connected — ${config.publicUrl} is live.` : `Relay not connected (${detail}). Retrying…`,
-          next === "up" ? "info" : "err"
-        );
-      }
-      relayState = next;
-      relayDetail = detail;
-      announce();
-    },
-  });
-  announce();
-}
-
-function disconnectRelay() {
-  stopTunnel?.();
-  stopTunnel = null;
-  relayState = "off";
-  relayDetail = "";
 }
 
 // --- saving options -----------------------------------------------------------------
@@ -288,25 +242,10 @@ async function saveOptions(input) {
     throw Object.assign(fail(`Your photos and accounts are in ${dataDir}. Switching folders starts an empty site there — move the folder's contents yourself to keep them.`), { needsConfirm: "confirmMove" });
   }
 
-  // How friends reach it.
-  let publicUrl = "";
-  let relay = { url: "", name: "", secret: "" };
-  const online = text("online", "later");
-  if (online === "own") {
-    publicUrl = text("publicUrl").replace(/\/+$/, "");
-    if (!/^https?:\/\/[^\s/]+/.test(publicUrl)) throw fail("The public address must start with https:// — for example https://photos.example.com");
-  } else if (online === "relay") {
-    const url = text("relayUrl").replace(/\/+$/, "");
-    if (!/^https?:\/\/[^\s/]+$/.test(url)) throw fail("Enter the relay address you were given, for example https://sites.example.com");
-    const name = text("relayName").toLowerCase();
-    const problem = validateSiteName(name);
-    if (problem) throw fail(problem);
-    const same = before.relay.url === url && before.relay.name === name && before.relay.secret;
-    const secret = same ? before.relay.secret : crypto.randomBytes(32).toString("base64url");
-    publicUrl = await claimName(url, { name, secret, key: text("relayKey") || undefined }).catch((err) => {
-      throw fail(err.message);
-    });
-    relay = { url, name, secret };
+  // The address friends use, if the host already has one.
+  const publicUrl = text("publicUrl").replace(/\/+$/, "");
+  if (publicUrl && !/^https?:\/\/[^\s/]+/.test(publicUrl)) {
+    throw fail("The public address must start with https:// — for example https://photos.example.com");
   }
 
   // The first admin, validated before anything is written.
@@ -352,12 +291,10 @@ async function saveOptions(input) {
     },
     termsAcceptedAt: before.termsAcceptedAt || new Date().toISOString(),
     vapid,
-    relay,
   });
 
   const restart =
-    first || nextDataDir !== dataDir || next.host !== before.host || next.port !== before.port ||
-    JSON.stringify(next.relay) !== JSON.stringify(before.relay);
+    first || nextDataDir !== dataDir || next.host !== before.host || next.port !== before.port;
 
   writeConfig(nextDataDir, next);
   const relative = path.relative(appDir, nextDataDir);

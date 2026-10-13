@@ -67,7 +67,6 @@ fi
 case "${1:-}" in
   setup) shift; exec node scripts/setup.mjs "$@" ;;
   users) shift; exec node scripts/users.mjs "$@" ;;
-  relay) shift; exec node scripts/relay.mjs "$@" ;;
   "" | start)
     # With a desktop, open the control panel. On a machine with no screen
     # (a server reached over SSH), use the terminal instead.
@@ -80,5 +79,5 @@ case "${1:-}" in
     exec node scripts/start.mjs
     ;;
   panel) shift; exec node scripts/panel.mjs "$@" ;;
-  *) echo "Usage: sh nopostnow.sh [panel | start | setup | users ... | relay ...]" >&2; exit 1 ;;
+  *) echo "Usage: sh nopostnow.sh [panel | start | setup | users ...]" >&2; exit 1 ;;
 esac

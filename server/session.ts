@@ -7,9 +7,8 @@ import { getAccount, hashToken, randomToken, type Account } from "./core/account
 
 export const SESSION_COOKIE = "npn_session";
 // Over HTTPS the cookie carries the __Host- prefix, which browsers only accept
-// from this exact host. A site that shares a parent domain with other sites
-// (as on a relay) therefore cannot have its session cookie planted or
-// overwritten by a neighbour.
+// from this exact host, so another site on a sibling subdomain cannot plant
+// or overwrite it.
 const SECURE_SESSION_COOKIE = "__Host-npn_session";
 const SESSION_DAYS = 90;
 const SESSION_MS = SESSION_DAYS * 86_400_000;
