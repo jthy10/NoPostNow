@@ -202,22 +202,8 @@
 
       <fieldset>
         <legend>Getting online</legend>
-        <label class="f"><span>How friends outside your home reach it</span>
-          <select id="online">
-            <option value="later">Not yet — only my own network for now</option>
-            <option value="relay">Through a NoPostNow relay (no domain needed)</option>
-            <option value="own">I have my own address (domain, tunnel or proxy)</option>
-          </select>
-        </label>
-        <div class="grid" id="relayFields" hidden style="margin-top:12px">
-          <label class="f full"><span>Relay address</span><input type="text" id="relayUrl" placeholder="https://sites.example.com"></label>
-          <label class="f"><span>Name for your address</span><input type="text" id="relayName" placeholder="lake-house"></label>
-          <label class="f"><span>Access key (if the relay needs one)</span><input type="text" id="relayKey" autocomplete="off"></label>
-          <div class="hint full">A relay passes visitors through to this computer. Whoever runs it could see what passes through, so use one run by someone you trust.</div>
-        </div>
-        <div id="ownFields" hidden style="margin-top:12px">
-          <label class="f"><span>Public address or hostname</span><input type="text" id="publicUrl" placeholder="https://photos.example.com"></label>
-        </div>
+        <label class="f"><span>Public address, once you have one</span><input type="text" id="publicUrl" placeholder="https://photos.example.com"></label>
+        <div class="hint">Leave empty until you have a domain. The usual route is a domain with a free Cloudflare Tunnel — see docs/GOING-ONLINE.md. Invite and reset links use this address.</div>
       </fieldset>
 
       <fieldset>
@@ -330,18 +316,12 @@ function render() {
   else if (s.lanUrls.length) fill($("lan"), s.lanUrls.map((u) => (running ? link(u) : document.createTextNode(u))));
   else $("lan").textContent = "http://" + c.host + ":" + c.port;
 
-  const hint = $("publicHint");
-  hint.className = "hint";
   if (c.publicUrl) {
     fill($("public"), [link(c.publicUrl)]);
-    if (c.online === "relay") {
-      const r = s.relay.state;
-      hint.textContent = r === "up" ? "Connected through the relay." : r === "off" ? "Through a relay — connects when the site is running." : "Relay not connected" + (s.relay.detail ? " (" + s.relay.detail + ")" : "") + " — retrying.";
-      if (r === "down" || r === "connecting") hint.className = "hint warn";
-    } else hint.textContent = "Your own address. Make sure it forwards to the address above.";
+    $("publicHint").textContent = "Make sure your tunnel or proxy forwards this address to the one above.";
   } else {
     $("public").textContent = "Not online yet";
-    hint.textContent = "Friends outside your home can't reach it. Open Options → Getting online.";
+    $("publicHint").textContent = "Friends outside your home can't reach it yet. See docs/GOING-ONLINE.md, then enter the address in Options.";
   }
 
   $("members").textContent = s.members + (s.members === 1 ? " account" : " accounts") + " · " + s.admins + (s.admins === 1 ? " admin" : " admins");
@@ -396,11 +376,9 @@ $("quit").onclick = async () => {
 const dlg = $("optionsDialog");
 function syncVisibility() {
   $("hostCustomWrap").hidden = $("hostMode").value !== "custom";
-  $("relayFields").hidden = $("online").value !== "relay";
-  $("ownFields").hidden = $("online").value !== "own";
   $("momentFields").hidden = !$("momentOn").checked;
 }
-for (const id of ["hostMode", "online", "momentOn"]) $(id).addEventListener("change", syncVisibility);
+for (const id of ["hostMode", "momentOn"]) $(id).addEventListener("change", syncVisibility);
 
 function openOptions() {
   const s = state, c = s.config, first = !s.configured;
@@ -419,9 +397,7 @@ function openOptions() {
   $("hostMode").value = preset ? c.host : "custom";
   $("hostCustom").value = preset ? (s.lanIps[0] || "") : c.host;
   $("port").value = c.port;
-  $("online").value = c.online;
-  $("relayUrl").value = c.relayUrl; $("relayName").value = c.relayName; $("relayKey").value = "";
-  $("publicUrl").value = c.online === "own" ? c.publicUrl : "";
+  $("publicUrl").value = c.publicUrl;
   $("signup").value = c.signup;
   $("timeZone").value = first ? s.systemZone : c.timeZone;
   $("momentOn").checked = c.dailyMoment.enabled; $("momentTime").value = c.dailyMoment.time;
@@ -446,8 +422,6 @@ $("optionsForm").addEventListener("submit", async (e) => {
       siteName: $("siteName").value, tagline: $("tagline").value, accent: $("accent").value,
       host: $("hostMode").value === "custom" ? $("hostCustom").value : $("hostMode").value,
       port: Number($("port").value),
-      online: $("online").value,
-      relayUrl: $("relayUrl").value, relayName: $("relayName").value, relayKey: $("relayKey").value,
       publicUrl: $("publicUrl").value,
       signup: $("signup").value, timeZone: $("timeZone").value,
       dailyMoment: { enabled: $("momentOn").checked, time: $("momentTime").value, bothHalves: $("bothHalves").checked, specialDate: $("specialDate").value.trim() },

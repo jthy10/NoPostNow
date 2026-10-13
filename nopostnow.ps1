@@ -62,7 +62,6 @@ switch ($command) {
   "panel" { node scripts/panel.mjs @rest; exit $LASTEXITCODE }
   "setup" { node scripts/setup.mjs @rest; exit $LASTEXITCODE }
   "users" { node scripts/users.mjs @rest; exit $LASTEXITCODE }
-  "relay" { node scripts/relay.mjs @rest; exit $LASTEXITCODE }
   "start" {
     # Terminal only, no window. First run walks through setup.
     node scripts/configured.mjs
@@ -73,5 +72,5 @@ switch ($command) {
     node scripts/start.mjs
     exit $LASTEXITCODE
   }
-  default { Write-Host "Usage: .\nopostnow.cmd [panel | start | setup | users ... | relay ...]"; exit 1 }
+  default { Write-Host "Usage: .\nopostnow.cmd [panel | start | setup | users ...]"; exit 1 }
 }

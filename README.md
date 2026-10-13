@@ -65,10 +65,10 @@ Then open the address it prints (by default <http://localhost:3000>).
 
 Out of the box the site is reachable from your own network. To let friends in
 from anywhere — and to let phones install it and receive notifications — it
-needs a public `https://` address. Two ways need no router changes: a free
-Cloudflare Tunnel on your own domain, or a NoPostNow relay, which gives your
-site an address without you owning a domain at all.
-**[docs/GOING-ONLINE.md](docs/GOING-ONLINE.md)** has step-by-step instructions.
+needs a public `https://` address. The usual way is to buy a domain (about $10
+a year) and connect it with a free Cloudflare Tunnel, which needs no router
+changes. **[docs/GOING-ONLINE.md](docs/GOING-ONLINE.md)** has step-by-step
+instructions.
 
 ## Day to day
 
@@ -112,9 +112,6 @@ side. There are no outside services:
   [`server/rules.ts`](server/rules.ts).
 - **Settings** — `config.json` in the data folder, written by the control
   panel or the setup wizard.
-- **Relay** (optional) — [`relay/`](relay) holds a small server that gives
-  home-hosted sites a public address, and the connector a site uses to attach
-  to one. See [docs/RELAY.md](docs/RELAY.md) if you want to run a relay.
 
 See [SECURITY.md](SECURITY.md) for the security model and advice for hosts.
 

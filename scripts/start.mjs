@@ -6,8 +6,7 @@ import { spawn, spawnSync } from "node:child_process";
 import os from "node:os";
 import { createRequire } from "node:module";
 import { hasConfig, readConfig, resolveDataDir } from "../server/core/config.ts";
-import { startTunnel } from "../relay/client.mjs";
-import { appDir, bold, buildIsCurrent, cyan, dim, green, red, stampBuild, yellow } from "./lib.mjs";
+import { appDir, bold, buildIsCurrent, cyan, dim, red, stampBuild, yellow } from "./lib.mjs";
 
 const dev = process.argv.includes("--dev");
 const dataDir = resolveDataDir(appDir);
@@ -56,23 +55,6 @@ const child = spawn(
     env: { ...process.env, NOPOSTNOW_DATA_DIR: dataDir },
   }
 );
-
-// Published through a relay: keep the site attached to it while it runs.
-if (config.relay.url && config.relay.name && config.relay.secret) {
-  startTunnel({
-    relayUrl: config.relay.url,
-    name: config.relay.name,
-    secret: config.relay.secret,
-    localPort: config.port,
-    localHost: config.host === "0.0.0.0" ? "127.0.0.1" : config.host,
-    onStatus: (state, detail) =>
-      console.log(
-        state === "up"
-          ? `  ${green("Relay connected")} ${dim("— the public address is live")}`
-          : `  ${yellow("Relay not connected")} ${dim(`(${detail}) — retrying`)}`
-      ),
-  });
-}
 
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => child.kill(signal));
 child.on("exit", (code) => process.exit(code ?? 0));

@@ -12,9 +12,8 @@ Replace `3000` below with your port if you picked a different one.
 
 - [A. Try it in one command](#a-try-it-in-one-command)
 - [B. A permanent address with Cloudflare Tunnel](#b-a-permanent-address-with-cloudflare-tunnel) (recommended)
-- [C. A NoPostNow relay](#c-a-nopostnow-relay) (no domain needed)
-- [D. Your own reverse proxy](#d-your-own-reverse-proxy)
-- [E. Friends only, no public address](#e-friends-only-no-public-address)
+- [C. Your own reverse proxy](#c-your-own-reverse-proxy)
+- [D. Friends only, no public address](#d-friends-only-no-public-address)
 - [After you are online](#after-you-are-online)
 - [Keeping it running](#keeping-it-running)
 
@@ -57,38 +56,14 @@ costs about $10 a year.
    - Service type: `HTTP`
    - URL: `localhost:3000`
 5. **Tell the site its address.** In the control panel open **Options →
-   Getting online**, choose **I have my own address**, and enter it. (In the
-   terminal: `sh nopostnow.sh setup`.) Invite and reset links will now use it.
+   Getting online** and enter it as the public address. (In the terminal:
+   `sh nopostnow.sh setup`.) Invite and reset links will now use it.
 
 With a tunnel in place you can also re-run setup and choose **Only this
 computer** for who may open the site directly, so the tunnel is the only way
 in.
 
-## C. A NoPostNow relay
-
-A relay is a small public server that passes visitors through to your computer
-over a connection your site opens outward. You need no domain, no Cloudflare
-account and no router changes — only the address of a relay someone runs, and
-an access key if they ask for one.
-
-1. In the control panel open **Options → Getting online** and choose
-   **Through a NoPostNow relay**. (In the terminal: `sh nopostnow.sh setup`.)
-2. Enter the relay's address, the access key if you were given one, and a name
-   for your site, such as `lake-house`.
-3. Save. Your site gets the address `https://lake-house.<relay domain>` and
-   connects whenever it is running. The panel shows whether it is connected.
-
-Two things to know before choosing this:
-
-- **Trust.** Visitors' traffic passes through the relay, and whoever runs it
-  could technically read it. Use a relay run by someone you trust — or run
-  your own, which takes a small server and a domain: see [RELAY.md](RELAY.md).
-- **Availability.** If the relay is down, your public address is down. Your
-  site keeps working on your own network.
-
-There is no official public relay at the moment.
-
-## D. Your own reverse proxy
+## C. Your own reverse proxy
 
 If you already run Caddy, nginx, Traefik or similar with a domain and
 certificates, point it at `http://localhost:3000`. Two things matter:
@@ -110,7 +85,7 @@ photos.example.com {
 This route needs ports 80 and 443 forwarded from your router to the machine,
 and your domain's DNS pointed at your home IP address.
 
-## E. Friends only, no public address
+## D. Friends only, no public address
 
 A private network such as [Tailscale](https://tailscale.com) puts your devices
 and your friends' devices on one network without exposing anything publicly.
