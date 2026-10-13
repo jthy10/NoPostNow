@@ -18,26 +18,15 @@ jobs:
     name: Quality
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      NEXT_PUBLIC_FIREBASE_API_KEY: test-api-key
-      NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: test.firebaseapp.com
-      NEXT_PUBLIC_FIREBASE_PROJECT_ID: test-project
-      NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: test-project.firebasestorage.app
-      NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: "100000000000"
-      NEXT_PUBLIC_FIREBASE_APP_ID: "1:100000000000:web:0000000000000000000000"
-      NEXT_PUBLIC_VAPID_PUBLIC_KEY: test-public-key
-      VAPID_PRIVATE_KEY: test-private-key
-      VAPID_SUBJECT: https://example.com
-      FIREBASE_PROJECT_ID: test-project
-      CRON_SECRET: test-cron-secret
-      REQUIRE_ADMIN_MFA: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run build
+      - run: npm test
+      - run: npm run test:e2e
