@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 // Port of the original site's avatar crop flow: drag to reposition,
 // slider to zoom, output a 400px square JPEG.
@@ -8,15 +8,16 @@ const VIEWPORT = 280;
 const OUTPUT = 400;
 
 export default function AvatarCropModal({
-  src,
+  blob,
   onCancel,
   onCropped,
 }: {
-  src: string;
+  blob: Blob;
   onCancel: () => void;
   onCropped: (blob: Blob) => void;
 }) {
-  const imgRef = useRef<HTMLImageElement>(null);
+  const previewRef = useRef<HTMLCanvasElement>(null);
+  const bitmapRef = useRef<ImageBitmap | null>(null);
   const dragStart = useRef<{ x: number; y: number } | null>(null);
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
   const [scale, setScale] = useState(1);
@@ -32,17 +33,41 @@ export default function AvatarCropModal({
     };
   }
 
-  function handleLoad() {
-    const img = imgRef.current!;
-    const n = { w: img.naturalWidth, h: img.naturalHeight };
-    const fit = Math.max(VIEWPORT / n.w, VIEWPORT / n.h);
-    setNatural(n);
-    setScale(fit);
-    setPos({
-      x: (VIEWPORT - n.w * fit) / 2,
-      y: (VIEWPORT - n.h * fit) / 2,
+  useEffect(() => {
+    let active = true;
+    let bitmap: ImageBitmap | null = null;
+    void createImageBitmap(blob).then((decoded) => {
+      if (!active) {
+        decoded.close();
+        return;
+      }
+      bitmap = decoded;
+      bitmapRef.current = decoded;
+      const nextNatural = { w: decoded.width, h: decoded.height };
+      const fit = Math.max(VIEWPORT / nextNatural.w, VIEWPORT / nextNatural.h);
+      setNatural(nextNatural);
+      setScale(fit);
+      setPos({
+        x: (VIEWPORT - nextNatural.w * fit) / 2,
+        y: (VIEWPORT - nextNatural.h * fit) / 2,
+      });
     });
-  }
+    return () => {
+      active = false;
+      bitmapRef.current = null;
+      bitmap?.close();
+    };
+  }, [blob]);
+
+  useEffect(() => {
+    const canvas = previewRef.current;
+    const bitmap = bitmapRef.current;
+    if (!canvas || !bitmap || !natural) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, VIEWPORT, VIEWPORT);
+    ctx.drawImage(bitmap, pos.x, pos.y, natural.w * scale, natural.h * scale);
+  }, [natural, pos, scale]);
 
   // Zoom anchored on the viewport centre so the subject stays put.
   function changeScale(next: number) {
@@ -68,8 +93,8 @@ export default function AvatarCropModal({
   }
 
   function handleConfirm() {
-    const img = imgRef.current;
-    if (!img || !natural) return;
+    const bitmap = bitmapRef.current;
+    if (!bitmap || !natural) return;
     const canvas = document.createElement("canvas");
     canvas.width = OUTPUT;
     canvas.height = OUTPUT;
@@ -77,7 +102,7 @@ export default function AvatarCropModal({
     const srcX = -pos.x / scale;
     const srcY = -pos.y / scale;
     const srcSize = VIEWPORT / scale;
-    ctx.drawImage(img, srcX, srcY, srcSize, srcSize, 0, 0, OUTPUT, OUTPUT);
+    ctx.drawImage(bitmap, srcX, srcY, srcSize, srcSize, 0, 0, OUTPUT, OUTPUT);
     canvas.toBlob(
       (blob) => {
         if (blob) onCropped(blob);
@@ -96,24 +121,13 @@ export default function AvatarCropModal({
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
       >
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          ref={imgRef}
-          src={src}
-          alt=""
-          draggable={false}
-          onLoad={handleLoad}
-          className="absolute max-w-none cursor-grab select-none active:cursor-grabbing"
-          style={
-            natural
-              ? {
-                  width: natural.w * scale,
-                  height: natural.h * scale,
-                  left: pos.x,
-                  top: pos.y,
-                }
-              : { opacity: 0 }
-          }
+        <canvas
+          ref={previewRef}
+          width={VIEWPORT}
+          height={VIEWPORT}
+          role="img"
+          aria-label="Avatar crop preview"
+          className="h-full w-full cursor-grab select-none active:cursor-grabbing"
         />
       </div>
 

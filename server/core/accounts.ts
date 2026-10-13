@@ -45,9 +45,9 @@ function toAccount(row: AccountRow): Account {
 const ID_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
 export function randomId(length = 20): string {
-  const bytes = crypto.randomBytes(length);
   let out = "";
-  for (let i = 0; i < length; i++) out += ID_ALPHABET[bytes[i] % ID_ALPHABET.length];
+  // randomInt draws without bias, so every character is equally likely.
+  for (let i = 0; i < length; i++) out += ID_ALPHABET[crypto.randomInt(ID_ALPHABET.length)];
   return out;
 }
 
