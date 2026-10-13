@@ -1,31 +1,26 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import InstallCta from "./InstallCta";
+import { config } from "@/server/runtime";
 
-export const metadata: Metadata = {
-  title: "Get the NoPostNow App",
-  description:
-    "NoPostNow now has an app! Full-screen feed, push notifications when friends post, and automatic updates — no app store needed.",
-  openGraph: {
-    title: "NoPostNow now has an app!",
-    description:
-      "Push notifications, full-screen feed, auto-updates. Add it to your Home Screen in 10 seconds.",
-    url: "/app",
-    siteName: "NoPostNow",
-    type: "website",
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "NoPostNow now has an app!",
-    description:
-      "Push notifications, full-screen feed, auto-updates. Add it to your Home Screen in 10 seconds.",
-  },
-};
+export const dynamic = "force-dynamic";
+
+export async function generateMetadata(): Promise<Metadata> {
+  const { siteName } = config();
+  const title = `${siteName} now has an app!`;
+  const description = `${title} Full-screen feed, push notifications when friends post, and automatic updates — no app store needed.`;
+  return {
+    title: `Get the ${siteName} App`,
+    description,
+    openGraph: { title, description, url: "/app", siteName, type: "website" },
+    twitter: { card: "summary_large_image", title, description },
+  };
+}
 
 const stats = [
   { label: "RATING", value: "5.0", caption: "★★★★★" },
   { label: "AGE", value: "18+", caption: "Adults Only" },
-  { label: "ACCESS", value: "Members", caption: "Verified accounts" },
+  { label: "ACCESS", value: "Members", caption: "Invite only" },
   { label: "PRICE", value: "Free", caption: "Forever" },
 ];
 
@@ -61,7 +56,6 @@ const features = [
 ];
 
 const info = [
-  ["Provider", "NoPostNow contributors"],
   ["Category", "Social"],
   ["Compatibility", "iPhone & Android"],
   ["Size", "Basically nothing"],
@@ -94,6 +88,7 @@ function PhoneFrame({ label, children }: { label: string; children: React.ReactN
 }
 
 export default function AppStorePage() {
+  const { siteName } = config();
   return (
     <main className="mx-auto max-w-xl pb-14">
       {/* header — icon, name, GET */}
@@ -101,11 +96,11 @@ export default function AppStorePage() {
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src="/icon-192.png"
-          alt="NoPostNow app icon"
+          alt={`${siteName} app icon`}
           className="h-24 w-24 shrink-0 rounded-[22px] border-[0.5px] border-edge"
         />
         <div className="min-w-0 flex-1">
-          <h1 className="text-2xl font-extrabold tracking-tight">NoPostNow</h1>
+          <h1 className="text-2xl font-extrabold tracking-tight">{siteName}</h1>
           <p className="mt-0.5 text-sm text-meta">A private photo feed</p>
           <div className="mt-3 flex items-center gap-3">
             <InstallCta variant="pill" />
@@ -139,7 +134,7 @@ export default function AppStorePage() {
         <div className="flex touch-pan-x touch-pan-y snap-x snap-mandatory gap-4 overflow-x-auto overscroll-x-contain px-5 pb-2 [scrollbar-width:none]">
           <PhoneFrame label="The feed">
             <div className="flex h-8 items-center justify-center border-b-[0.5px] border-line">
-              <span className="text-[10px] font-extrabold tracking-[2px]">NoPostNow</span>
+              <span className="text-[10px] font-extrabold tracking-[2px]">{siteName}</span>
             </div>
             <div
               aria-hidden
@@ -194,7 +189,7 @@ export default function AppStorePage() {
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src="/icon-192.png" alt="" className="h-7 w-7 rounded-md" />
                   <div className="min-w-0 flex-1">
-                    <p className="text-[9px] font-bold leading-tight">NoPostNow</p>
+                    <p className="text-[9px] font-bold leading-tight">{siteName}</p>
                     <p className="text-[9px] leading-tight text-body">Alex posted a photo</p>
                   </div>
                   <span className="self-start text-[8px] text-mut">now</span>
@@ -215,7 +210,7 @@ export default function AppStorePage() {
   
           <PhoneFrame label="Your profile">
             <div className="flex h-8 items-center justify-center border-b-[0.5px] border-line">
-              <span className="text-[10px] font-extrabold tracking-[2px]">NoPostNow</span>
+              <span className="text-[10px] font-extrabold tracking-[2px]">{siteName}</span>
             </div>
             <div className="flex flex-col items-center border-b-[0.5px] border-line pb-3 pt-4">
               <div
@@ -258,7 +253,7 @@ export default function AppStorePage() {
           About this app
         </h2>
         <p className="mt-3 text-sm leading-relaxed text-body">
-          NoPostNow is a members-only photo feed. No algorithm, no ads, and no
+          {siteName} is a members-only photo feed. No algorithm, no ads, and no
           suggested posts—just photos from the people in the community.
         </p>
         <p className="mt-3 text-sm leading-relaxed text-body">
@@ -342,12 +337,12 @@ export default function AppStorePage() {
       <p className="mt-8 text-center text-[12px] text-mut">
         Not ready to install?{" "}
         <Link href="/" className="font-semibold text-body underline underline-offset-2">
-          Just open NoPostNow in your browser
+          Just open {siteName} in your browser
         </Link>
       </p>
 
       <footer className="mt-12 flex justify-center">
-        <p className="text-[10px] tracking-[0.5px] text-dim">built by the NoPostNow community</p>
+        <p className="text-[10px] tracking-[0.5px] text-dim">powered by NoPostNow</p>
       </footer>
     </main>
   );
