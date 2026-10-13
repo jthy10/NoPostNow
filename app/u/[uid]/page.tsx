@@ -2,14 +2,17 @@
 
 import { use, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { collection, getDocs, query, where } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { db, collection, getDocs, query, where } from "@/lib/store";
 import { useAuth } from "@/lib/auth-context";
 import { useUserByUid } from "@/lib/users";
 import { threadIdFor } from "@/lib/dms";
 import { useBlockSets, blockUser, unblockUser } from "@/lib/blocks";
+import { countLikes, usePodium } from "@/lib/likes";
+import { useStreaks } from "@/lib/streaks";
 import type { Post } from "@/lib/posts";
 import Avatar from "@/components/Avatar";
+import LikeTotal from "@/components/LikeTotal";
+import StreakFlame from "@/components/StreakFlame";
 import PhotoCard from "@/components/PhotoCard";
 import CommentSheet from "@/components/CommentSheet";
 import UploadSheet from "@/components/UploadSheet";
@@ -35,9 +38,12 @@ export default function UserProfilePage({
   const router = useRouter();
   const scrollRef = useRef<HTMLElement>(null);
   const meta = useUserByUid(profileUid);
-  const { blocked, blockedBy } = useBlockSets(user?.uid);
+  const { blocked, blockedBy, hidden } = useBlockSets(user?.uid);
+  const podium = usePodium(user?.uid);
+  const streaks = useStreaks(user?.uid);
   const [posts, setPosts] = useState<Post[] | null>(null);
   const [visible, setVisible] = useState(PAGE);
+  const sentinelRef = useRef<HTMLDivElement>(null);
   const [capturedFile, setCapturedFile] = useState<File | null>(null);
   const [activeComments, setActiveComments] = useState<Post | null>(null);
   const [commentBumps, setCommentBumps] = useState<Record<string, number>>({});
@@ -75,6 +81,25 @@ export default function UserProfilePage({
       cancelled = true;
     };
   }, [user, profileUid]);
+
+  // Reveal more of the already-fetched list as the sentinel nears the
+  // viewport — every post is loaded up front (see the query above), so
+  // "loading more" is just widening the slice, no extra fetch involved.
+  // Depends on posts: the sentinel only enters the DOM once the fetch
+  // above resolves, so the observer must (re)attach after that, not just
+  // once at mount when the ref is still null.
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) setVisible((v) => v + PAGE);
+      },
+      { root: scrollRef.current }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [posts, visible]);
 
   async function handleBlockToggle() {
     if (!user || blockBusy) return;
@@ -140,29 +165,70 @@ export default function UserProfilePage({
             <p className="mt-1 text-xs text-mut">POSTING SINCE {joinedLabel(earliestPost)}</p>
           ) : null}
           {posts !== null && (
-            <p className="mt-1 text-xs font-semibold tracking-[0.5px] text-mut">
-              {posts.length} POST{posts.length === 1 ? "" : "S"}
-            </p>
+            <>
+              <p className="mt-1 text-xs font-semibold tracking-[0.5px] text-mut">
+                {posts.length} POST{posts.length === 1 ? "" : "S"}
+              </p>
+              <LikeTotal
+                likes={countLikes(posts, hidden)}
+                place={podium.get(profileUid) ?? null}
+              />
+              {/* Spelled out here rather than the bare number a name row
+                  gets — the profile is where you come to read someone's
+                  standing, and it sits in the same quiet uppercase as the
+                  counts above it. */}
+              <StreakFlame
+                days={streaks.get(profileUid) ?? 0}
+                label
+                className="mt-1.5 text-xs tracking-[0.5px]"
+              />
+            </>
           )}
 
-          <button
-            onClick={() => setShowActions(true)}
-            aria-label="Profile options"
-            className="mt-4 flex items-center rounded-lg border-[0.5px] border-edge px-4 py-2 text-mut transition-colors hover:border-mut hover:text-white"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              className="h-4 w-4"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={1.8}
-              strokeLinecap="round"
-              strokeLinejoin="round"
+          <div className="mt-4 flex items-center gap-2">
+            {/* Straight to the thread — same destination as the sheet's Send
+                Message, just one tap instead of three. Hidden while they're
+                blocked: /dm filters blocked peers out of the list, so the
+                thread would vanish the moment you sent to it. */}
+            {!iBlockedThem && (
+              <button
+                onClick={() => router.push(`/dm/${threadIdFor(user.uid, profileUid)}`)}
+                aria-label={profileName ? `Message ${profileName}` : "Send message"}
+                className="flex items-center rounded-lg border-[0.5px] border-edge px-4 py-2 text-mut transition-colors hover:border-mut hover:text-white"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  className="h-4 w-4"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={1.8}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+                </svg>
+              </button>
+            )}
+
+            <button
+              onClick={() => setShowActions(true)}
+              aria-label="Profile options"
+              className="flex items-center rounded-lg border-[0.5px] border-edge px-4 py-2 text-mut transition-colors hover:border-mut hover:text-white"
             >
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-            </svg>
-          </button>
+              <svg
+                viewBox="0 0 24 24"
+                className="h-4 w-4"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.8}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+              </svg>
+            </button>
+          </div>
         </div>
 
         {iBlockedThem ? (
@@ -203,12 +269,7 @@ export default function UserProfilePage({
             ))}
 
             {posts !== null && visible < posts.length && (
-              <button
-                onClick={() => setVisible((v) => v + PAGE)}
-                className="mx-auto my-6 block rounded-lg border-[0.5px] border-edge px-6 py-2.5 text-[11px] font-bold uppercase tracking-[1.5px] text-mut transition-colors hover:border-mut hover:text-white"
-              >
-                Load More
-              </button>
+              <div ref={sentinelRef} className="h-10" />
             )}
           </>
         )}
@@ -226,12 +287,14 @@ export default function UserProfilePage({
             className="animate-[sheet-up_0.25s_ease-out] rounded-t-[14px] bg-[#1c1c1e] pb-[calc(32px+env(safe-area-inset-bottom))] pt-2"
             onClick={(e) => e.stopPropagation()}
           >
-            <button
-              onClick={() => router.push(`/dm/${threadIdFor(user.uid, profileUid)}`)}
-              className="block w-full border-t-[0.5px] border-[#2c2c2e] px-5 py-4 text-left text-[17px] font-semibold text-white transition-colors active:bg-[#28282a]"
-            >
-              Send Message
-            </button>
+            {!iBlockedThem && (
+              <button
+                onClick={() => router.push(`/dm/${threadIdFor(user.uid, profileUid)}`)}
+                className="block w-full border-t-[0.5px] border-[#2c2c2e] px-5 py-4 text-left text-[17px] font-semibold text-white transition-colors active:bg-[#28282a]"
+              >
+                Send Message
+              </button>
+            )}
             <button
               onClick={handleBlockToggle}
               disabled={blockBusy}
@@ -274,7 +337,7 @@ export default function UserProfilePage({
           onClose={() => setCapturedFile(null)}
           onPosted={() => {
             setCapturedFile(null);
-            router.push("/feed");
+            router.push("/");
           }}
         />
       )}

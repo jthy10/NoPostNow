@@ -4,6 +4,7 @@ import { use, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
+import { useBlockSets } from "@/lib/blocks";
 import { useUserByUid } from "@/lib/users";
 import {
   useThread,
@@ -60,10 +61,22 @@ export default function ThreadPage({
 
   const member = Boolean(myUid && threadId.split("_").length === 2 && threadId.split("_").includes(myUid));
   const peerUid = myUid ? peerUidOf(threadId, myUid) : null;
+  // A blocked thread vanishes from /dm, but the URL outlives the list — an
+  // open tab, a bookmark, an old push. Without this the person you blocked
+  // keeps typing into a thread you can no longer see, and each message pings
+  // you. Treated exactly like a thread you don't belong to: bounce to /dm.
+  const { hidden, ready: blocksReady } = useBlockSets(myUid);
+  const blockedPeer = Boolean(peerUid && hidden.has(peerUid));
   const peerMeta = useUserByUid(peerUid);
   const appUids = useAppUids();
   const thread = useThread(member ? threadId : undefined);
-  const messages = useMessages(member ? threadId : undefined);
+  // Hold the message listener until the thread doc lands. It carries the
+  // clear pointer, and subscribing before it arrives would flash the history
+  // you deleted for the moment between the two snapshots.
+  const messages = useMessages(
+    member && thread !== undefined ? threadId : undefined,
+    myUid && thread ? thread.clearedAt?.[myUid] : null
+  );
 
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -98,10 +111,11 @@ export default function ThreadPage({
     if (!loading && !user) router.replace("/login");
   }, [loading, user, router]);
 
-  // Malformed link or someone else's thread — nothing to see here.
+  // Malformed link, someone else's thread, or a blocked peer — nothing to
+  // see here.
   useEffect(() => {
-    if (user && !member) router.replace("/dm");
-  }, [user, member, router]);
+    if (user && (!member || blockedPeer)) router.replace("/dm");
+  }, [user, member, blockedPeer, router]);
 
   // Reading the thread clears its unread state (list dot + chat badge).
   useEffect(() => {
@@ -122,7 +136,9 @@ export default function ThreadPage({
     });
   }, [messages, inset]);
 
-  if (loading || !user || !member || standalone === null) {
+  // Hold the loading state until the block lists land, so a blocked thread
+  // never flashes its history on the way to the redirect.
+  if (loading || !user || !member || !blocksReady || blockedPeer || standalone === null) {
     return (
       <div className="fixed inset-0 flex items-center justify-center text-sm font-semibold uppercase tracking-[2px] text-mut">
         Loading
@@ -140,7 +156,7 @@ export default function ThreadPage({
 
   async function handleSend() {
     const trimmed = text.trim();
-    if (!trimmed || busy || !myUid || !peerUid) return;
+    if (!trimmed || busy || !myUid || !peerUid || blockedPeer) return;
     setBusy(true);
     setSendError(false);
     try {
@@ -151,7 +167,7 @@ export default function ThreadPage({
         peerName: peerMeta?.username || peerName,
         text: trimmed,
       });
-      void notifyDm(username || "Anonymous", trimmed, peerUid, threadId);
+      void notifyDm(trimmed, peerUid, threadId);
       setText("");
     } catch {
       setSendError(true);
@@ -201,7 +217,7 @@ export default function ThreadPage({
           <div className="mb-3 rounded-lg border-[0.5px] border-edge bg-card p-3.5">
             <p className="text-[13px] font-bold">{peerName} isn&apos;t on the app yet</p>
             <p className="mt-0.5 text-[11px] leading-snug text-meta">
-              Sending a message invites them — next time they open nopostnow.com
+              Sending a message invites them — next time they open the site
               they&apos;ll be told you texted and shown how to install the app to
               read it.
             </p>

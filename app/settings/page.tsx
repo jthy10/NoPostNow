@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { FirebaseError } from "firebase/app";
+import { ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useBlockSets, unblockUser } from "@/lib/blocks";
 import { fetchMessageableUsers } from "@/lib/users";
@@ -27,10 +27,20 @@ import {
 } from "@/lib/notif-prefs";
 import { formatMinutes } from "@/lib/quiet-hours";
 import { downloadExport } from "@/lib/export";
+import {
+  MASCOT_DETAILS,
+  MASCOTS,
+  saveMascotPreference,
+  useMascotPreference,
+  type MascotKind,
+} from "@/lib/mascot";
 import { ensurePushSubscription, isStandalone, pushSupported, requestPushPermission } from "@/lib/push";
 import Avatar from "@/components/Avatar";
+import { MascotPreview } from "@/components/Mascot";
 import PageHeader from "@/components/PageHeader";
 import ViewportShell from "@/components/ViewportShell";
+import { useSite } from "@/components/SiteProvider";
+import { dailyMomentLabel, dailyMomentTime } from "@/lib/site";
 
 // Settings, iOS-grouped-list style: titled card groups of rows. Tapping a
 // row with a form expands it in place (one open at a time); switches save
@@ -41,27 +51,14 @@ const inputCls =
 const btnCls =
   "rounded-lg bg-white px-5 py-2.5 text-xs font-extrabold text-black transition-opacity disabled:opacity-30";
 
-function firebaseMessage(e: unknown): string {
-  if (e instanceof FirebaseError) {
-    switch (e.code) {
-      case "auth/wrong-password":
-      case "auth/invalid-credential":
-        return "Current password is wrong.";
-      case "auth/email-already-in-use":
-        return "That email is already used by another account.";
-      case "auth/invalid-email":
-        return "That doesn't look like a valid email.";
-      case "auth/weak-password":
-        return `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`;
-      case "auth/too-many-requests":
-        return "Too many attempts — wait a bit and try again.";
-      case "auth/multi-factor-auth-required":
-        return "This account has 2FA — make this change from the admin panel.";
-      case "auth/requires-recent-login":
-        return "Sign out and back in, then try again.";
-    }
+function errorMessage(e: unknown): string {
+  if (e instanceof ApiError) {
+    if (e.code === "invalid-credential") return "Current password is wrong.";
+    if (e.code === "permission-denied") return "You don't have permission to do that.";
+    if (e.status === 0) return "Couldn't reach the server — check your connection.";
+    if (e.message && e.message !== e.code) return e.message;
   }
-  return e instanceof Error ? e.message : "Something went wrong — try again.";
+  return e instanceof Error ? e.message : "Something went wrong.";
 }
 
 type Msg = { ok: boolean; text: string } | null;
@@ -180,8 +177,9 @@ const fromTime = (v: string) => {
 };
 
 export default function SettingsPage() {
-  const { user, username, loading, setUsername } = useAuth();
+  const { user, username, loading, setUsername, adopt, refresh } = useAuth();
   const router = useRouter();
+  const site = useSite();
 
   // Which expandable row is open — one at a time keeps the page tidy.
   const [openRow, setOpenRow] = useState<string | null>(null);
@@ -222,6 +220,10 @@ export default function SettingsPage() {
   const [prefs, setPrefs] = useState<NotifPrefs | null>(null);
   const [prefsMsg, setPrefsMsg] = useState<Msg>(null);
   const [pushHint, setPushHint] = useState<string | null>(null);
+
+  const mascot = useMascotPreference(user?.uid);
+  const [mascotBusy, setMascotBusy] = useState(false);
+  const [mascotMsg, setMascotMsg] = useState<Msg>(null);
 
   const { blocked } = useBlockSets(user?.uid);
   const [blockNames, setBlockNames] = useState<Map<string, string>>(new Map());
@@ -284,20 +286,33 @@ export default function SettingsPage() {
       await saveNotifPrefs(user.uid, next);
     } catch (e) {
       setPrefs(prev);
-      setPrefsMsg({ ok: false, text: firebaseMessage(e) });
+      setPrefsMsg({ ok: false, text: errorMessage(e) });
     }
   }
 
-  // Turning the daily reminder on should also make sure this device can
+  async function chooseMascot(next: MascotKind) {
+    if (!user?.email || next === mascot || mascotBusy) return;
+    setMascotBusy(true);
+    setMascotMsg(null);
+    try {
+      await saveMascotPreference(user.uid, next);
+    } catch (e) {
+      setMascotMsg({ ok: false, text: errorMessage(e) });
+    } finally {
+      setMascotBusy(false);
+    }
+  }
+
+  // Turning the daily call on should also make sure this device can
   // actually hear it — subscribe (or prompt) while we have the tap.
-  async function setDailyPrompt(on: boolean) {
+  async function setDailyCall(on: boolean) {
     if (!user || !prefs) return;
     setPushHint(null);
-    await savePrefs({ ...prefs, dailyPrompt: on });
+    await savePrefs({ ...prefs, daily: on });
     if (!on) return;
     if (!isStandalone() || !pushSupported()) {
       setPushHint(
-        "Saved — but this device can't receive pushes. Install NoPostNow to your Home Screen and enable notifications to receive the daily reminder."
+        `Saved — but this device can't receive pushes. Install ${site.siteName} to your Home Screen and enable notifications to hear the daily call.`
       );
       return;
     }
@@ -328,11 +343,11 @@ export default function SettingsPage() {
         setNameMsg({ ok: false, text: `“${next}” is already taken.` });
         return;
       }
-      await renameUser({ uid: user.uid, email: user.email, newName: next });
+      await renameUser({ uid: user.uid, newName: next });
       setUsername(next);
       setNameMsg({ ok: true, text: "Saved — your old posts and comments now show the new name." });
     } catch (e) {
-      setNameMsg({ ok: false, text: firebaseMessage(e) });
+      setNameMsg({ ok: false, text: errorMessage(e) });
     } finally {
       setNameBusy(false);
     }
@@ -345,19 +360,13 @@ export default function SettingsPage() {
     setEmailBusy(true);
     setEmailMsg(null);
     try {
-      const result = await changeEmail(user, emailPw, next);
-      setEmailMsg(
-        result === "done"
-          ? { ok: true, text: `Done — you now sign in as ${next}.` }
-          : {
-              ok: true,
-              text: `Almost — we sent a confirmation link to ${next}. Click it, then sign back in with the new address; your profile moves over automatically.`,
-            }
-      );
+      const saved = await changeEmail(emailPw, next);
+      await refresh();
+      setEmailMsg({ ok: true, text: `Done — you now sign in as ${saved}.` });
       setNewEmail("");
       setEmailPw("");
     } catch (e) {
-      setEmailMsg({ ok: false, text: firebaseMessage(e) });
+      setEmailMsg({ ok: false, text: errorMessage(e) });
     } finally {
       setEmailBusy(false);
     }
@@ -372,12 +381,12 @@ export default function SettingsPage() {
     setPwBusy(true);
     setPwMsg(null);
     try {
-      await changePassword(user, curPw, newPw);
+      await changePassword(curPw, newPw);
       setCurPw("");
       setNewPw("");
       setPwMsg({ ok: true, text: "Password changed." });
     } catch (e) {
-      setPwMsg({ ok: false, text: firebaseMessage(e) });
+      setPwMsg({ ok: false, text: errorMessage(e) });
     } finally {
       setPwBusy(false);
     }
@@ -391,13 +400,12 @@ export default function SettingsPage() {
       await sendFeedback({
         uid: user.uid,
         username: username || "Anonymous",
-        email: user.email,
         text: feedback,
       });
       setFeedback("");
-      setFbMsg({ ok: true, text: "Sent — thanks, the developers will see it." });
+      setFbMsg({ ok: true, text: "Message received and delivered — thank you!" });
     } catch (e) {
-      setFbMsg({ ok: false, text: firebaseMessage(e) });
+      setFbMsg({ ok: false, text: errorMessage(e) });
     } finally {
       setFbBusy(false);
     }
@@ -411,7 +419,7 @@ export default function SettingsPage() {
       await downloadExport(user);
       setExportMsg({ ok: true, text: "Downloaded — one JSON file with everything." });
     } catch (e) {
-      setExportMsg({ ok: false, text: firebaseMessage(e) });
+      setExportMsg({ ok: false, text: errorMessage(e) });
     } finally {
       setExportBusy(false);
     }
@@ -431,7 +439,7 @@ export default function SettingsPage() {
             : { ok: true, text: "Nothing to remove — you have no posts up." }
       );
     } catch (e) {
-      setDelMsg({ ok: false, text: firebaseMessage(e) });
+      setDelMsg({ ok: false, text: errorMessage(e) });
     } finally {
       setDelBusy(false);
     }
@@ -450,10 +458,11 @@ export default function SettingsPage() {
     setAcctBusy(true);
     setAcctMsg(null);
     try {
-      await deleteMyAccount(user, acctPw);
+      await deleteMyAccount(acctPw);
+      adopt({ user: null });
       router.replace("/login");
     } catch (e) {
-      setAcctMsg({ ok: false, text: firebaseMessage(e) });
+      setAcctMsg({ ok: false, text: errorMessage(e) });
       setAcctBusy(false);
     }
   }
@@ -574,26 +583,87 @@ export default function SettingsPage() {
           </Row>
         </Group>
 
+        <Group title="Mascot">
+          <div
+            role="radiogroup"
+            aria-label="Choose your navbar animal"
+            className="grid grid-cols-2 gap-3 p-4"
+          >
+            {MASCOTS.map((animal) => {
+              const selected = mascot === animal;
+              const { label, motion } = MASCOT_DETAILS[animal];
+              return (
+                <button
+                  key={animal}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  disabled={mascotBusy}
+                  onClick={() => chooseMascot(animal)}
+                  className={`mascot-choice relative flex min-h-[118px] flex-col items-center justify-center rounded-xl border px-3 py-4 transition-colors disabled:opacity-60 ${
+                    selected
+                      ? "border-white bg-white text-black"
+                      : "border-edge bg-field text-white active:border-mut"
+                  }`}
+                >
+                  <MascotPreview animal={animal} />
+                  <span className="mt-2 text-[14px] font-extrabold">{label}</span>
+                  <span className={`text-[11px] ${selected ? "text-black/55" : "text-mut"}`}>
+                    {motion} on tap
+                  </span>
+                  {selected && (
+                    <span className="absolute right-2.5 top-2.5 flex h-5 w-5 items-center justify-center rounded-full bg-black text-white">
+                      <svg
+                        viewBox="0 0 16 16"
+                        className="h-3 w-3"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={2.2}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="m3 8 3 3 7-7" />
+                      </svg>
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          <p className="px-4 pb-4 text-[12px] leading-snug text-mut">
+            Your pick sits beside the site name. Tap it in the navbar to send it across the screen.
+          </p>
+          {mascotMsg && (
+            <div className="px-4 pb-4">
+              <Note msg={mascotMsg} />
+            </div>
+          )}
+        </Group>
+
         <Group title="Notifications">
           {prefs === null ? (
             <p className="px-4 py-4 text-[12px] text-dim">Loading…</p>
           ) : (
             <>
-              <ToggleRow
-                label={
-                  <span>
-                    Daily photo reminder{" "}
-                    <span className="ml-1 rounded-full bg-heart/15 px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-[0.5px] text-heart">
-                      Optional
-                    </span>
-                  </span>
-                }
-                sub="A once-a-day nudge to share what you're up to."
-                on={prefs.dailyPrompt}
-                onChange={setDailyPrompt}
-              />
-              {pushHint && (
-                <p className="px-4 pb-3 text-[12px] leading-snug text-heart">{pushHint}</p>
+              {site.dailyMoment.enabled && (
+                <>
+                  <ToggleRow
+                    label={
+                      <span>
+                        Daily {dailyMomentLabel()} call{" "}
+                        <span className="ml-1 rounded-full bg-heart/15 px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-[0.5px] text-heart">
+                          The ritual
+                        </span>
+                      </span>
+                    }
+                    sub={`Every day at exactly ${dailyMomentTime()}, a nudge to post what you're up to.`}
+                    on={prefs.daily}
+                    onChange={setDailyCall}
+                  />
+                  {pushHint && (
+                    <p className="px-4 pb-3 text-[12px] leading-snug text-heart">{pushHint}</p>
+                  )}
+                </>
               )}
               <ToggleRow
                 label="New posts"
@@ -781,8 +851,8 @@ export default function SettingsPage() {
           >
             <p className="mb-3 text-xs leading-relaxed text-mut">
               This signs you out forever: your login, profile, notification
-              settings, and push subscriptions are deleted, and your posts are
-              removed from the feed. Comments you left on friends&apos; posts
+              settings, and push subscriptions are deleted, along with every
+              post and photo you shared. Comments you left on friends&apos; posts
               and messages you sent stay. This cannot be undone — consider
               downloading your data first.
             </p>
@@ -818,7 +888,7 @@ export default function SettingsPage() {
         <Group title="Support">
           <Row
             label="Note to the developers"
-            sub="Ideas, bugs, complaints — straight to the people building this."
+            sub="Ideas, bugs, complaints — straight to the people who run this site. Lands in your admins chat too, so you can keep the conversation going there."
             open={openRow === "feedback"}
             onToggle={() => toggleRow("feedback")}
           >
@@ -842,7 +912,7 @@ export default function SettingsPage() {
         </Group>
 
         <p className="px-5 pt-8 text-center text-[11px] tracking-[0.5px] text-dim">
-          NoPostNow — one feed, no algorithm.
+          {site.siteName} — one feed, no algorithm.
         </p>
       </main>
     </ViewportShell>

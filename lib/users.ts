@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { collection, getDocs } from "firebase/firestore";
-import { db } from "./firebase";
+import { db, collection, getDocs, limit, query, where } from "./store";
 
 export type UserMeta = {
   username: string;
@@ -10,21 +9,21 @@ export type UserMeta = {
   uid: string | null;
   joinedAt: Date | null;
   appAt: Date | null; // first launch from the Home Screen — "has the PWA"
-  // Most recent post time (from the photos scan in fetchMessageableUsers) —
+  // Most recent post time, stamped onto the user's own doc by createPost —
   // the "recently active" signal the @mention picker ranks by. Null when they
-  // haven't posted; only set on the merged messageable list.
+  // haven't posted since the field existed.
   lastActiveAt?: Date | null;
 };
 
-// One fetch of the email-free public profile collection per session, shared by every
+// One fetch of the (small) users collection per session, shared by every
 // avatar in the feed, comment sheets, and profile pages.
 let mapPromise: Promise<UserMeta[]> | null = null;
 
 function allUsers(): Promise<UserMeta[]> {
-  mapPromise ??= getDocs(collection(db, "publicProfiles")).then((snap) => {
+  mapPromise ??= getDocs(collection(db, "users")).then((snap) => {
     const list: UserMeta[] = [];
     snap.forEach((d) => {
-      const { username, avatarPath, uid, joinedAt, appAt } = d.data();
+      const { username, avatarPath, uid, joinedAt, appAt, lastPostAt } = d.data();
       if (!username) return;
       list.push({
         username,
@@ -32,6 +31,7 @@ function allUsers(): Promise<UserMeta[]> {
         uid: uid ?? null,
         joinedAt: joinedAt?.toDate?.() ?? null,
         appAt: appAt?.toDate?.() ?? null,
+        lastActiveAt: lastPostAt?.toDate?.() ?? null,
       });
     });
     return list;
@@ -53,56 +53,38 @@ export function fetchAllUsers(): Promise<UserMeta[]> {
   return allUsers();
 }
 
-// The users collection alone under-counts: uid only self-heals into a user
-// doc when that person signs in, so friends who haven't been back lately
-// have uid: null (or no doc with a username at all). Their posts carry
-// userUUID though — merge the two so DM search really lists everyone.
+// The users collection can under-count: uid only self-heals into a user doc
+// when that person signs in, so friends who haven't been back since profiles
+// shipped have uid: null. Their posts carry userUUID though, so the photos
+// collection can fill the gap.
+//
+// This used to read *every* photo in the archive to build a username -> uid
+// map — hundreds of document reads, growing forever, on the first comment
+// sheet or DM list of every session. Instead, ask only about the handful of
+// members actually missing a uid: one single-doc query each, and none at all
+// once everyone has signed in since the self-heal shipped.
 let messageablePromise: Promise<UserMeta[]> | null = null;
+
+async function uidFromPosts(username: string): Promise<string | null> {
+  const snap = await getDocs(
+    query(collection(db, "photos"), where("username", "==", username), limit(1))
+  ).catch(() => null);
+  const uuid = snap?.docs[0]?.data().userUUID;
+  return typeof uuid === "string" && uuid ? uuid : null;
+}
 
 export function fetchMessageableUsers(): Promise<UserMeta[]> {
   messageablePromise ??= (async () => {
-    const [users, photos] = await Promise.all([
-      allUsers(),
-      getDocs(collection(db, "photos")).catch(() => null),
-    ]);
+    const users = await allUsers();
+    const missing = users.filter((u) => !u.uid);
+    if (missing.length === 0) return users;
 
-    // username -> uid as recorded on their posts (first hit wins — posts
-    // may carry pre-rename usernames, so only trust this as a fallback).
-    // Same pass captures each uid's most recent post time, so the @mention
-    // picker can order by "recently active" with no extra reads.
-    const postUid = new Map<string, string>();
-    const lastPostAt = new Map<string, number>();
-    photos?.forEach((d) => {
-      const { username, userUUID, timestamp } = d.data();
-      if (typeof username === "string" && typeof userUUID === "string" && !postUid.has(username)) {
-        postUid.set(username, userUUID);
-      }
-      const ms = timestamp?.toMillis?.();
-      if (typeof userUUID === "string" && typeof ms === "number" && ms > (lastPostAt.get(userUUID) ?? 0)) {
-        lastPostAt.set(userUUID, ms);
-      }
-    });
-
-    const activeAt = (uid: string | null) => {
-      const ms = uid ? lastPostAt.get(uid) : undefined;
-      return ms ? new Date(ms) : null;
-    };
-
-    const list = users.map((u) => {
-      const uid = u.uid ?? postUid.get(u.username) ?? null;
-      return { ...u, uid, lastActiveAt: activeAt(uid) };
-    });
-
-    // People who post but have no usable users doc still deserve a row.
-    const knownUids = new Set(list.map((u) => u.uid).filter(Boolean));
-    const knownNames = new Set(list.map((u) => u.username));
-    for (const [username, uid] of postUid) {
-      if (!knownUids.has(uid) && !knownNames.has(username)) {
-        list.push({ username, avatarPath: null, uid, joinedAt: null, appAt: null, lastActiveAt: activeAt(uid) });
-        knownUids.add(uid);
-      }
-    }
-    return list;
+    const resolved = new Map(
+      await Promise.all(
+        missing.map(async (u) => [u.username, await uidFromPosts(u.username)] as const)
+      )
+    );
+    return users.map((u) => ({ ...u, uid: u.uid ?? resolved.get(u.username) ?? null }));
   })();
   return messageablePromise;
 }

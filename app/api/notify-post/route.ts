@@ -1,236 +1,154 @@
-import { authErrorResponse, ApiAuthError, requireMember } from "@/lib/api-auth";
-import { getAdminFirestore } from "@/lib/firebase-admin";
-import { extractMentionUids } from "@/lib/mentions";
-import { sendPush } from "@/lib/push-server";
+import { listAccounts } from "@/server/core/accounts";
+import { blockedPairUids, pushConfigured, sendPush, type PushKind } from "@/server/push";
+import { config, db } from "@/server/runtime";
+import { getSession, isAdmin, isSameOrigin } from "@/server/session";
+import { getDoc } from "@/server/store";
 
-type EventType = "post" | "comment" | "like" | "dm" | "commentLike";
-type EventBody = {
-  type?: EventType;
-  postId?: string;
-  commentId?: string;
-  threadId?: string;
-};
+export const dynamic = "force-dynamic";
 
-const EVENT_TYPES = new Set<EventType>(["post", "comment", "like", "dm", "commentLike"]);
-const ID_PATTERN = /^[A-Za-z0-9_-]{1,120}$/;
+// Fans out push notifications: new posts go to everyone, comments and likes
+// go only to the people involved. The actor's own devices never ring, and
+// neither do the devices of anyone blocked in either direction.
+//
+// Nothing in the request body is trusted for *identity*: the sender is the
+// signed-in member, their display name is read from their own profile, and a
+// DM ping must name a thread the sender actually belongs to. The body only
+// says what happened, never who.
 
-function validId(value: unknown): value is string {
-  return typeof value === "string" && ID_PATTERN.test(value);
-}
+// Per-member ceiling on how many notifications one person can trigger — a
+// backstop against a runaway client or a spam burst.
+const RATE_WINDOW_MS = 60_000;
+const RATE_MAX = 30;
+const recentSends = new Map<string, number[]>();
 
-async function enforceRateLimit(uid: string) {
-  const db = getAdminFirestore();
-  const ref = db.doc(`_serverRateLimits/notify-${uid}`);
+function rateLimited(uid: string): boolean {
   const now = Date.now();
-
-  await db.runTransaction(async (transaction) => {
-    const snapshot = await transaction.get(ref);
-    const data = snapshot.data() as { startedAt?: number; count?: number } | undefined;
-    const startedAt = typeof data?.startedAt === "number" ? data.startedAt : 0;
-    const count = typeof data?.count === "number" ? data.count : 0;
-
-    if (now - startedAt < 60_000) {
-      if (count >= 60) throw new ApiAuthError("rate limit exceeded", 429);
-      transaction.set(ref, { startedAt, count: count + 1 });
-    } else {
-      transaction.set(ref, { startedAt: now, count: 1 });
+  const recent = (recentSends.get(uid) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
+  recent.push(now);
+  recentSends.set(uid, recent);
+  if (recentSends.size > 200) {
+    for (const [key, times] of recentSends) {
+      if (!times.some((t) => now - t < RATE_WINDOW_MS)) recentSends.delete(key);
     }
-  });
+  }
+  return recent.length > RATE_MAX;
 }
 
-export async function POST(req: Request) {
-  try {
-    const contentLength = Number(req.headers.get("content-length") || "0");
-    if (contentLength > 16_384) {
-      return Response.json({ error: "request too large" }, { status: 413 });
-    }
+const TYPES = [
+  "post", "comment", "like", "dm", "mention", "commentLike", "adminNote", "adminReply",
+] as const;
+type NotifyType = (typeof TYPES)[number];
 
-    const actor = await requireMember(req);
-    await enforceRateLimit(actor.uid);
+export async function POST(request: Request) {
+  const session = await getSession();
+  if (!session) return Response.json({ error: "unauthenticated" }, { status: 401 });
+  if (!(await isSameOrigin(request))) return Response.json({ error: "cross-site" }, { status: 403 });
+  if (!pushConfigured()) return Response.json({ sent: 0, stale: 0, skipped: "push not configured" });
 
-    const body = (await req.json().catch(() => null)) as EventBody | null;
-    if (!body?.type || !EVENT_TYPES.has(body.type)) {
-      return Response.json({ error: "invalid event" }, { status: 400 });
-    }
+  const body = (await request.json().catch(() => ({}))) as {
+    type?: string;
+    caption?: string;
+    text?: string;
+    targetUid?: string;
+    targetUids?: string[];
+    postId?: string;
+    threadId?: string;
+  };
+  const type: NotifyType = TYPES.includes(body.type as NotifyType) ? (body.type as NotifyType) : "post";
+  const actorUid = session.account.uid;
+  const profile = getDoc(`users/${actorUid}`)?.data;
 
-    const db = getAdminFirestore();
-    const profile = actor.email
-      ? await db.doc(`users/${actor.email}`).get()
-      : null;
-    const username = profile?.data()?.username;
-    if (!profile?.exists || typeof username !== "string" || !username.trim()) {
-      throw new ApiAuthError("member profile required", 403);
-    }
-    if (profile.data()?.muted === true && ["post", "comment"].includes(body.type)) {
-      throw new ApiAuthError("member is muted", 403);
-    }
+  let uids = [
+    ...new Set(
+      (Array.isArray(body.targetUids) ? body.targetUids : body.targetUid ? [body.targetUid] : [])
+        .filter((u): u is string => typeof u === "string" && u.length > 0)
+    ),
+  ].slice(0, 30);
 
-    if (body.type === "post") {
-      if (!validId(body.postId)) {
-        return Response.json({ error: "invalid post" }, { status: 400 });
-      }
-      const post = await db.doc(`photos/${body.postId}`).get();
-      const postData = post.data();
-      if (!post.exists || postData?.userUUID !== actor.uid || postData?.deleted === true) {
-        throw new ApiAuthError("forbidden", 403);
-      }
-      const caption = typeof postData.caption === "string" ? postData.caption.slice(0, 70) : "";
-      const result = await sendPush({
-        preference: "post",
-        excludeUid: actor.uid,
-        payload: {
-          title: "NoPostNow",
-          body: caption
-            ? `${username} just posted — “${caption}”`
-            : `${username} just posted`,
-          url: `/p/${body.postId}`,
-        },
-      });
-      return Response.json(result);
-    }
-
-    if (body.type === "like") {
-      if (!validId(body.postId)) {
-        return Response.json({ error: "invalid post" }, { status: 400 });
-      }
-      const post = await db.doc(`photos/${body.postId}`).get();
-      const postData = post.data();
-      const likedBy = Array.isArray(postData?.likedBy) ? postData.likedBy : [];
-      if (!post.exists || !likedBy.includes(actor.uid)) {
-        throw new ApiAuthError("forbidden", 403);
-      }
-      const targetUid = typeof postData?.userUUID === "string" ? postData.userUUID : "";
-      const result = await sendPush({
-        targetUids: [targetUid],
-        excludeUid: actor.uid,
-        preference: "like",
-        payload: {
-          title: "NoPostNow",
-          body: `${username} liked your photo`,
-          url: `/p/${body.postId}`,
-        },
-      });
-      return Response.json(result);
-    }
-
-    if (body.type === "comment" || body.type === "commentLike") {
-      if (!validId(body.postId) || !validId(body.commentId)) {
-        return Response.json({ error: "invalid comment" }, { status: 400 });
-      }
-      const [post, comment] = await Promise.all([
-        db.doc(`photos/${body.postId}`).get(),
-        db.doc(`photos/${body.postId}/comments/${body.commentId}`).get(),
-      ]);
-      if (!post.exists || !comment.exists) {
-        return Response.json({ error: "not found" }, { status: 404 });
-      }
-      const commentData = comment.data()!;
-
-      if (body.type === "commentLike") {
-        const likedBy = Array.isArray(commentData.likedBy) ? commentData.likedBy : [];
-        if (!likedBy.includes(actor.uid)) throw new ApiAuthError("forbidden", 403);
-        const targetUid =
-          typeof commentData.userUUID === "string" ? commentData.userUUID : "";
-        const result = await sendPush({
-          targetUids: [targetUid],
-          excludeUid: actor.uid,
-          preference: "like",
-          payload: {
-            title: "NoPostNow",
-            body: `${username} liked your comment`,
-            url: `/p/${body.postId}?comments=1`,
-          },
-        });
-        return Response.json(result);
-      }
-
-      if (commentData.userUUID !== actor.uid) {
-        throw new ApiAuthError("forbidden", 403);
-      }
-      const text = typeof commentData.text === "string" ? commentData.text.slice(0, 200) : "";
-      const [comments, users] = await Promise.all([
-        db.collection(`photos/${body.postId}/comments`).get(),
-        db.collection("users").get(),
-      ]);
-      const knownUsers = users.docs
-        .map((doc) => doc.data())
-        .filter(
-          (value): value is { uid: string; username: string } =>
-            typeof value.uid === "string" && typeof value.username === "string",
-        );
-      const mentionTargets = extractMentionUids(text, knownUsers).filter(
-        (uid) => uid !== actor.uid,
-      );
-      const mentionSet = new Set(mentionTargets);
-      const participantTargets = [
-        post.data()?.userUUID,
-        ...comments.docs.map((doc) => doc.data().userUUID),
-      ].filter(
-        (uid): uid is string =>
-          typeof uid === "string" &&
-          uid !== actor.uid &&
-          !mentionSet.has(uid),
-      );
-
-      const [commentResult, mentionResult] = await Promise.all([
-        sendPush({
-          targetUids: [...new Set(participantTargets)],
-          excludeUid: actor.uid,
-          preference: "comment",
-          payload: {
-            title: "NoPostNow",
-            body: text
-              ? `${username} commented: “${text.slice(0, 90)}”`
-              : `${username} commented on a post`,
-            url: `/p/${body.postId}?comments=1`,
-          },
-        }),
-        sendPush({
-          targetUids: mentionTargets,
-          excludeUid: actor.uid,
-          preference: "comment",
-          payload: {
-            title: "NoPostNow",
-            body: `${username} mentioned you: “${text.slice(0, 90)}”`,
-            url: `/p/${body.postId}?comments=1`,
-          },
-        }),
-      ]);
-      return Response.json({
-        sent: commentResult.sent + mentionResult.sent,
-        stale: commentResult.stale + mentionResult.stale,
-        configured: commentResult.configured && mentionResult.configured,
-      });
-    }
-
-    if (!validId(body.threadId)) {
-      return Response.json({ error: "invalid thread" }, { status: 400 });
-    }
-    const thread = await db.doc(`dms/${body.threadId}`).get();
-    const threadData = thread.data();
-    const uids = Array.isArray(threadData?.uids) ? threadData.uids : [];
-    if (
-      !thread.exists ||
-      !uids.includes(actor.uid) ||
-      threadData?.lastFrom !== actor.uid
-    ) {
-      throw new ApiAuthError("forbidden", 403);
-    }
-    const targetUid = uids.find((uid) => uid !== actor.uid);
-    const text = typeof threadData?.lastText === "string" ? threadData.lastText.slice(0, 120) : "";
-    const result = await sendPush({
-      targetUids: targetUid ? [targetUid] : [],
-      excludeUid: actor.uid,
-      preference: "dm",
-      payload: {
-        title: "NoPostNow",
-        body: text ? `${username}: ${text}` : `New message from ${username}`,
-        url: `/dm/${body.threadId}`,
-        tag: `dm-${body.threadId}`,
-      },
-    });
-    return Response.json(result);
-  } catch (error) {
-    return authErrorResponse(error);
+  if (type === "adminNote") {
+    // A member's note rings every admin.
+    uids = listAccounts(db()).filter((a) => a.role === "admin" && !a.disabled).map((a) => a.uid);
+  } else if (type === "adminReply" && !isAdmin(session)) {
+    return Response.json({ error: "not an admin" }, { status: 403 });
   }
+  if (type !== "post" && uids.length === 0) {
+    return Response.json({ sent: 0, stale: 0, skipped: "no targets" });
+  }
+
+  const idOk = (s?: string) => (s && /^[A-Za-z0-9_-]{1,120}$/.test(s) ? s : null);
+  const postId = idOk(body.postId);
+  const threadId = idOk(body.threadId);
+
+  // A "new post" ping reaches everyone, so it must be about a post the
+  // sender really made.
+  if (type === "post" && (!postId || getDoc(`photos/${postId}`)?.data.userUUID !== actorUid)) {
+    return Response.json({ error: "not your post" }, { status: 403 });
+  }
+  // A DM ping must name a thread the sender is in, and only its members.
+  if (type === "dm") {
+    const parts = threadId ? threadId.split("_") : [];
+    const inThread = (u: string) => parts.includes(u);
+    if (parts.length !== 2 || !inThread(actorUid) || !uids.every(inThread)) {
+      return Response.json({ error: "not a participant" }, { status: 403 });
+    }
+  }
+  // Muted members can't push text at people.
+  if (profile?.muted === true && type !== "like" && type !== "commentLike" && type !== "adminNote") {
+    return Response.json({ sent: 0, stale: 0, skipped: "muted" });
+  }
+  if (rateLimited(actorUid)) return Response.json({ error: "slow down" }, { status: 429 });
+
+  const { siteName } = config();
+  const username =
+    type === "adminReply"
+      ? `${siteName} Admin`
+      : (typeof profile?.username === "string" ? profile.username : "Someone").slice(0, 30);
+  const caption = (body.caption || "").trim().slice(0, 70);
+  const text = (body.text || "").trim().slice(0, 90);
+  const messages: Record<NotifyType, string> = {
+    post: caption ? `${username} just posted — “${caption}”` : `${username} just posted`,
+    comment: text ? `${username} commented: “${text}”` : `${username} commented on a post`,
+    like: `${username} liked your photo`,
+    dm: text ? `${username}: ${text}` : `New message from ${username}`,
+    mention: text ? `${username} mentioned you: “${text}”` : `${username} mentioned you`,
+    commentLike: `${username} liked your comment`,
+    adminNote: text ? `${username} left a note: “${text}”` : `${username} left a note`,
+    adminReply: text ? `${username}: ${text}` : `New message from ${username}`,
+  };
+  // A mention rides the comment preference and a comment-like the like one, so
+  // "mute comments" and "mute likes" each do what they say.
+  const kind: PushKind =
+    type === "mention"
+      ? "comment"
+      : type === "commentLike"
+        ? "like"
+        : type === "adminNote" || type === "adminReply"
+          ? "dm"
+          : type;
+  const opensThread = type === "comment" || type === "mention" || type === "commentLike";
+  const adminChat = type === "adminNote" || type === "adminReply";
+  const url = adminChat
+    ? "/dm/admins"
+    : type === "dm"
+      ? `/dm/${threadId}`
+      : postId
+        ? `/p/${postId}${opensThread ? "?comments=1" : ""}`
+        : "/";
+
+  const exclude = blockedPairUids(actorUid);
+  exclude.add(actorUid);
+  const result = await sendPush({
+    kind,
+    to: type === "post" ? undefined : uids,
+    exclude,
+    payload: {
+      title: siteName,
+      body: messages[type],
+      url,
+      // A burst of messages in one thread collapses into one notification.
+      ...(type === "dm" ? { tag: `dm-${threadId}` } : {}),
+      ...(adminChat ? { tag: type === "adminNote" ? `admin-note-${actorUid}` : "admin-chat" } : {}),
+    },
+  });
+  return Response.json(result);
 }

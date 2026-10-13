@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import {
+  db,
   collection,
   doc,
   addDoc,
@@ -13,9 +14,9 @@ import {
   limit,
   serverTimestamp,
   Timestamp,
-} from "firebase/firestore";
-import { db } from "./firebase";
+} from "./store";
 import { fetchMessageableUsers } from "./users";
+import { fetchHiddenUids, useBlockSets } from "./blocks";
 
 // Per-user in-app notification feed backing the bell in the top bar and the
 // /notifications page. Every item deep-links to its post via /p/{postId}.
@@ -24,7 +25,7 @@ import { fetchMessageableUsers } from "./users";
 //   notifications/{uid}/items/{id} -> { type, actorUid, actorName, postId, text?, at }
 //
 // Items are written by the acting client right after the action succeeds —
-// same trust model as posts/comments themselves, enforced by security rules
+// same trust model as posts/comments themselves, enforced by the server
 // (actorUid/actorName must be your own, no writing into your own feed).
 // DMs deliberately never appear here; they get push + the /dm badge instead.
 
@@ -64,9 +65,21 @@ export async function recordPostNotification(
   caption: string
 ) {
   // Merged list: includes friends whose users doc never self-healed a uid.
-  const users = await fetchMessageableUsers();
+  // This is the only fan-out that targets *everyone*, so it's the only one
+  // that has to subtract blocks itself — every other record* function is
+  // handed a recipient list its caller already filtered.
+  //
+  // If the block lists can't be read, fall back to notifying everyone: the
+  // reader's own client filters both the list and the badge by the same
+  // union, so an item that shouldn't be there stays invisible either way.
+  const [users, hidden] = await Promise.all([
+    fetchMessageableUsers(),
+    fetchHiddenUids(actorUid).catch(() => new Set<string>()),
+  ]);
   const targets = new Set(
-    users.map((u) => u.uid).filter((uid): uid is string => Boolean(uid) && uid !== actorUid)
+    users
+      .map((u) => u.uid)
+      .filter((uid): uid is string => !!uid && uid !== actorUid && !hidden.has(uid))
   );
   await Promise.allSettled(
     [...targets].map((uid) =>
@@ -179,10 +192,17 @@ export function useNotifications(uid: string | undefined, max: number) {
 // Live unseen count for the bell badge: items newer than seenAt.
 // Two light listeners (seen doc + newest items) so the badge updates the
 // moment a friend likes/comments/posts, on every page the top bar is on.
+//
+// Rows carry their actor so the count can drop the same people /notifications
+// hides. Without that the badge counts a blocked friend's activity and then
+// the page it opens shows nothing — and worse, it announces that someone you
+// made invisible is still around. Filtering on read (not just on write) also
+// covers items already in the feed when the block happened.
 export function useUnseenNotifications(uid: string | undefined) {
   const [seenAt, setSeenAt] = useState<Timestamp | null>(null);
   const [seenLoaded, setSeenLoaded] = useState(false);
-  const [times, setTimes] = useState<Timestamp[]>([]);
+  const [rows, setRows] = useState<{ at: Timestamp; actorUid: string }[]>([]);
+  const { hidden } = useBlockSets(uid);
 
   useEffect(() => {
     if (!uid) return;
@@ -197,13 +217,16 @@ export function useUnseenNotifications(uid: string | undefined) {
     const stopItems = onSnapshot(
       query(itemsCol(uid), orderBy("at", "desc"), limit(BADGE_SCAN)),
       (snap) => {
-        setTimes(
+        setRows(
           snap.docs
-            .map((d) => d.data().at as Timestamp | null)
-            .filter((t): t is Timestamp => Boolean(t))
+            .map((d) => ({
+              at: d.data().at as Timestamp | null,
+              actorUid: (d.data().actorUid as string | undefined) ?? "",
+            }))
+            .filter((r): r is { at: Timestamp; actorUid: string } => Boolean(r.at))
         );
       },
-      () => setTimes([])
+      () => setRows([])
     );
     return () => {
       stopSeen();
@@ -212,8 +235,9 @@ export function useUnseenNotifications(uid: string | undefined) {
   }, [uid]);
 
   if (!uid || !seenLoaded) return 0;
-  if (!seenAt) return times.length;
-  return times.filter((t) => t.toMillis() > seenAt.toMillis()).length;
+  const visible = rows.filter((r) => !hidden.has(r.actorUid));
+  if (!seenAt) return visible.length;
+  return visible.filter((r) => r.at.toMillis() > seenAt.toMillis()).length;
 }
 
 // Compact relative time for notification rows and DM previews.

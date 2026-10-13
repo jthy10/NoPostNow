@@ -1,88 +1,59 @@
 import type { Metadata } from "next";
 import LegalPage, { LegalSection } from "@/components/LegalPage";
+import { config } from "@/server/runtime";
 
-export const metadata: Metadata = {
-  title: "Terms | NoPostNow",
-  description: "Terms for using the hosted NoPostNow service.",
-};
+export const dynamic = "force-dynamic";
 
+export function generateMetadata(): Metadata {
+  return { title: `Terms | ${config().siteName}` };
+}
+
+// House rules for members of this site. A sensible default for a group of
+// friends; the host can edit this page to say whatever their group agrees to.
 export default function TermsPage() {
+  const { siteName } = config();
   return (
     <LegalPage
-      title="Terms of Use"
-      intro="These terms apply to the hosted service at nopostnow.com. The open-source code is separately provided under the repository's MIT License."
+      title="Terms"
+      intro={`${siteName} is a private space shared by people who know each other. Using it means agreeing to a few simple rules.`}
     >
-      <LegalSection title="Eligibility and accounts">
+      <LegalSection title="Your account">
         <p>
-          You must be at least 18 years old and able to agree to these terms. Provide
-          accurate account information, keep your credentials secure, and promptly
-          report suspected unauthorized access. You are responsible for activity under
-          your account.
+          Accounts are by invitation. Keep your password to yourself, and tell the host
+          if you think someone else has got into your account. You are responsible for
+          what is done with it.
         </p>
       </LegalSection>
 
-      <LegalSection title="Using NoPostNow">
+      <LegalSection title="What you share">
         <p>
-          You may use the service for lawful personal social sharing. Do not harass
-          people, impersonate others, invade privacy, exploit minors, distribute
-          malware, evade access controls, scrape member data, interfere with the
-          service, or post content that is unlawful or that you do not have the right to
-          share.
+          Your photos and words stay yours. By posting them you let the site store them
+          and show them to the other members, which is the whole point. Only post
+          things you have the right to share, and think about the people in your
+          photos before you post them.
         </p>
         <p>
-          Automated abuse, credential attacks, bulk account creation, spam, and attempts
-          to discover or misuse other members&apos; private information are prohibited.
-        </p>
-      </LegalSection>
-
-      <LegalSection title="Your content">
-        <p>
-          You keep ownership of content you submit. You give the service a limited,
-          worldwide, non-exclusive license to host, copy, process, display, and transmit
-          that content only as needed to operate, secure, improve, and administer
-          NoPostNow. This license ends when the content is deleted, subject to reasonable
-          backup, moderation, legal, and shared-conversation retention.
-        </p>
-        <p>
-          You are responsible for your content and for obtaining permission from people
-          depicted or whose information you share.
+          Don&apos;t post anything illegal, don&apos;t harass or impersonate anyone,
+          don&apos;t share other members&apos; photos or messages outside the group
+          without asking, and don&apos;t try to break into the site or other
+          people&apos;s accounts.
         </p>
       </LegalSection>
 
-      <LegalSection title="Moderation and account action">
+      <LegalSection title="The host's role">
         <p>
-          Administrators may remove or hide content, limit posting, suspend accounts, or
-          preserve evidence when reasonably necessary to enforce these terms, protect
-          members, maintain the service, or comply with law. Serious or repeated
-          violations can result in termination.
+          The host runs this site voluntarily and may remove posts, mute members, or
+          close accounts to keep the space working for everyone. The site may be
+          unavailable at times, and it may be shut down. If your photos matter to you,
+          keep your own copies — Settings can export your data.
         </p>
       </LegalSection>
 
-      <LegalSection title="Service availability">
+      <LegalSection title="No guarantees">
         <p>
-          The hosted service is provided on an “as available” basis. Features may change,
-          fail, or be discontinued, and data loss is possible. To the extent permitted by
-          law, no warranties are made about uninterrupted availability, fitness for a
-          particular purpose, or freedom from every defect.
-        </p>
-      </LegalSection>
-
-      <LegalSection title="Responsibility">
-        <p>
-          To the extent permitted by law, the service&apos;s operators and contributors
-          are not liable for indirect, incidental, special, consequential, or punitive
-          damages, lost data, lost profits, or harm caused by other members. Rights that
-          cannot legally be limited remain unaffected.
-        </p>
-      </LegalSection>
-
-      <LegalSection title="Privacy, changes, and contact">
-        <p>
-          The Privacy Notice explains data practices. These terms may be updated as the
-          service evolves; continued use after an updated version takes effect means you
-          accept it. For account or privacy help, use the private feedback form in
-          Settings. Report security issues through the repository&apos;s private security
-          advisory form.
+          The site is provided as it is, without warranties of any kind. It runs on
+          NoPostNow, open-source software released under the MIT License, whose authors
+          do not operate this site and are not responsible for it or its content.
         </p>
       </LegalSection>
     </LegalPage>

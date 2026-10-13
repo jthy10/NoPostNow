@@ -1,15 +1,15 @@
 "use client";
 
-import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
-import { db } from "./firebase";
+import { db, doc, getDoc, setDoc, serverTimestamp } from "./store";
 
 // Per-user push notification preferences, keyed by uid so the notify API
 // routes (which know recipients only by uid) can look them up with one read.
-// A missing doc means every social notification and the daily prompt are on.
-// Preferences only mute pushes —
+// A missing doc means the defaults: every social notification on AND the 7:27
+// daily prompt on — the ritual ships opt-out, so every member hears the
+// call unless they deliberately silence it. Preferences only mute pushes —
 // the in-app bell feed always records everything.
 //
-//   notifPrefs/{uid} -> { uid, posts, comments, likes, dms, dailyPrompt,
+//   notifPrefs/{uid} -> { uid, posts, comments, likes, dms, daily,
 //                         quietStart, quietEnd, tz, updatedAt }
 
 export type NotifPrefs = {
@@ -17,7 +17,7 @@ export type NotifPrefs = {
   comments: boolean;
   likes: boolean;
   dms: boolean;
-  dailyPrompt: boolean;
+  daily: boolean;
   // Minutes since midnight in `tz`; null = no quiet hours.
   quietStart: number | null;
   quietEnd: number | null;
@@ -37,7 +37,7 @@ export const DEFAULT_PREFS: NotifPrefs = {
   comments: true,
   likes: true,
   dms: true,
-  dailyPrompt: true,
+  daily: true,
   quietStart: null,
   quietEnd: null,
   tz: "America/New_York",
@@ -52,7 +52,7 @@ export async function loadNotifPrefs(uid: string): Promise<NotifPrefs> {
     comments: d.comments !== false,
     likes: d.likes !== false,
     dms: d.dms !== false,
-    dailyPrompt: d.dailyPrompt !== false,
+    daily: d.daily !== false,
     quietStart: typeof d.quietStart === "number" ? d.quietStart : null,
     quietEnd: typeof d.quietEnd === "number" ? d.quietEnd : null,
     tz: typeof d.tz === "string" && d.tz ? d.tz : browserTz(),
@@ -63,7 +63,7 @@ export async function saveNotifPrefs(uid: string, prefs: NotifPrefs) {
   await setDoc(doc(db, "notifPrefs", uid), {
     uid,
     ...prefs,
-    // Always restamp the timezone at save time — quiet hours and the daily
+    // Always restamp the timezone at save time — quiet hours and the 7:27
     // prompt should follow wherever the user actually is.
     tz: browserTz(),
     updatedAt: serverTimestamp(),

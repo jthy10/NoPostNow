@@ -1,27 +1,24 @@
 import {
+  db,
   addDoc,
   collection,
   getDocs,
   query,
   serverTimestamp,
   where,
-} from "firebase/firestore";
-import { db } from "./firebase";
+} from "./store";
 
 // A member's request to be credited as the real owner of an Anonymous post.
-// The write mirrors the feedback collection's shape so the security rules can
-// verify it the same way (uid/username/email must match the caller).
+// The server checks that the uid and username on the claim are the caller's.
 export async function createClaim(opts: {
   postId: string;
   uid: string;
   username: string;
-  email: string;
 }) {
   await addDoc(collection(db, "claims"), {
     postId: opts.postId,
     uid: opts.uid,
     username: opts.username,
-    email: opts.email,
     at: serverTimestamp(),
   });
 }

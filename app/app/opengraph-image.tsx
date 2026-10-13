@@ -1,7 +1,11 @@
 import { ImageResponse } from "next/og";
 import { loadAppIconDataUri, loadOgFonts, OG_SIZE } from "@/lib/og";
+import { config } from "@/server/runtime";
+import { siteOrigin } from "@/server/site";
 
-export const alt = "NoPostNow now has an app — add it to your Home Screen";
+export const dynamic = "force-dynamic";
+
+export const alt = "Now an app — add it to your Home Screen";
 export const size = OG_SIZE;
 export const contentType = "image/png";
 
@@ -9,6 +13,8 @@ const perks = ["Push notifications", "Full-screen feed", "Auto-updates", "No app
 
 export default async function Image() {
   const icon = await loadAppIconDataUri();
+  const { siteName } = config();
+  const address = (await siteOrigin()).replace(/^https?:\/\//, "");
   return new ImageResponse(
     (
       <div
@@ -94,7 +100,7 @@ export default async function Image() {
                 marginTop: 18,
               }}
             >
-              NoPostNow now has an app.
+              {siteName} now has an app.
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginTop: 36 }}>
               {perks.map((perk) => (
@@ -117,7 +123,7 @@ export default async function Image() {
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 40 }}>
               <div style={{ display: "flex", fontSize: 26, fontWeight: 700, color: "#ffffff" }}>
-                nopostnow.com/app
+                {address}/app
               </div>
               <div style={{ display: "flex", fontSize: 24, color: "#8a8a8a" }}>
                 · installs in 10 seconds

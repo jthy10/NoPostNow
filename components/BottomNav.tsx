@@ -3,6 +3,7 @@
 import { useRef, type RefObject } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { markCameraOpened } from "@/lib/posts";
 
 const icon = {
   fill: "none",
@@ -14,9 +15,12 @@ const icon = {
 
 export default function BottomNav({
   onCapture,
+  onRefresh,
   scrollRef,
 }: {
   onCapture: (file: File) => void;
+  // Feed page only: tapping FEED while already on it re-pulls everything.
+  onRefresh?: () => void;
   scrollRef?: RefObject<HTMLElement | null>;
 }) {
   const pathname = usePathname();
@@ -26,18 +30,28 @@ export default function BottomNav({
     <nav className="pwa-bottom-nav relative z-40 shrink-0 border-t-[0.5px] border-line bg-panel pb-[env(safe-area-inset-bottom)]">
       <div className="flex h-[46px] items-center justify-around px-5">
         <Link
-          href="/feed"
+          href="/"
           onClick={(e) => {
-            // Already on the feed: jump back to the top instead of re-navigating.
-            if (pathname === "/feed") {
+            // FEED is a two-stage tap. From another tab it means "take me back
+            // to where I was" — plain navigation, and the feed restores its
+            // session snapshot (posts, cursor, and the post you were looking
+            // at), so ducking into notifications or settings four weeks down
+            // doesn't cost you your place. Already on the feed, it means
+            // "give me a fresh feed" —
+            // scroll up and re-pull, the same reset closing and reopening the
+            // PWA does. Anything that genuinely changes what the feed should
+            // show (a new post, a block, a rename) invalidates the snapshot at
+            // the source, so restoring can't strand you on a stale list.
+            if (pathname === "/") {
               e.preventDefault();
               const scroller = scrollRef?.current;
               if (scroller) scroller.scrollTo({ top: 0, behavior: "smooth" });
               else window.scrollTo({ top: 0, behavior: "smooth" });
+              onRefresh?.();
             }
           }}
           className={`flex h-full min-w-16 flex-col items-center justify-center gap-0.5 transition-opacity ${
-            pathname === "/feed" ? "opacity-100" : "opacity-40"
+            pathname === "/" ? "opacity-100" : "opacity-40"
           }`}
         >
           <svg viewBox="0 0 24 24" className="h-5 w-5" {...icon}>
@@ -48,7 +62,12 @@ export default function BottomNav({
         </Link>
 
         <button
-          onClick={() => cameraInputRef.current?.click()}
+          onClick={() => {
+            // The 7:27 badge judges this instant, not when the upload lands —
+            // opening the camera on the minute is what counts (see createPost).
+            markCameraOpened();
+            cameraInputRef.current?.click();
+          }}
           className="flex h-full min-w-16 flex-col items-center justify-center gap-0.5"
           aria-label="Post a photo"
         >

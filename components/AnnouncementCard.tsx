@@ -2,10 +2,10 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { doc, getDoc } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { db, doc, getDoc } from "@/lib/store";
+import { site } from "@/lib/site";
 
-const DISMISS_KEY = "nopostnow-announcement-dismissed";
+const DISMISS_KEY = "nopostnow:announcement-dismissed";
 
 export type Announcement = {
   text: string;
@@ -61,7 +61,7 @@ export default function AnnouncementCard() {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <p className="mb-1 text-[10px] font-bold uppercase tracking-[1.5px] text-mut">
-            NoPostNow
+            {site().siteName}
           </p>
           {ann.link ? (
             <Link href={ann.link} className="block">

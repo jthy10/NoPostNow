@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { isPhone, isStandalone } from "@/lib/push";
+import { site } from "@/lib/site";
 
 // Chrome's install event — not in the TS DOM lib yet.
 type BeforeInstallPromptEvent = Event & { prompt: () => Promise<void> };
@@ -23,7 +24,7 @@ const shareIcon = (
 );
 
 // Persistent nudge for phone browsers: the app experience only exists once
-// NoPostNow is on the Home Screen, so this stays until they're in the PWA —
+// the app is on the Home Screen, so this stays until they're in the PWA —
 // no dismiss by design. Hidden in standalone mode and on desktop.
 export default function InstallBanner() {
   const [visible, setVisible] = useState(false);
@@ -52,7 +53,7 @@ export default function InstallBanner() {
         <>
           Tap <span className="font-bold text-white">&ldquo;Add to Home Screen&rdquo;</span>
         </>,
-        <>Open NoPostNow from your Home Screen</>,
+        <>Open {site().siteName} from your Home Screen</>,
       ]
     : null;
 

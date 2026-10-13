@@ -2,15 +2,20 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { signOut } from "firebase/auth";
-import { collection, doc, getDocs, query, setDoc, where } from "firebase/firestore";
-import { getBlob, ref, uploadBytes } from "firebase/storage";
-import { auth, db, storage } from "@/lib/firebase";
+import { db, collection, doc, getDocs, query, updateDoc, where } from "@/lib/store";
+import { signOut } from "@/lib/account";
+import { downloadFile, uploadFile } from "@/lib/files";
 import { useAuth } from "@/lib/auth-context";
 import { useAuthedImage } from "@/lib/use-authed-image";
 import { invalidateAvatarMap } from "@/lib/users";
+import { useBlockSets } from "@/lib/blocks";
+import { countLikes, usePodium } from "@/lib/likes";
+import { useStreaks } from "@/lib/streaks";
+import { ADMIN_CHAT_HREF, useAdminChatUnread } from "@/lib/admin-chat";
 import { initials } from "@/components/Avatar";
 import type { Post } from "@/lib/posts";
+import LikeTotal from "@/components/LikeTotal";
+import StreakFlame from "@/components/StreakFlame";
 import PhotoCard from "@/components/PhotoCard";
 import CommentSheet from "@/components/CommentSheet";
 import UploadSheet from "@/components/UploadSheet";
@@ -22,8 +27,9 @@ import ViewportShell from "@/components/ViewportShell";
 const PAGE = 6;
 
 export default function ProfilePage() {
-  const { user, username, avatarPath, isAdmin, loading, setAvatarPath } = useAuth();
+  const { user, username, avatarPath, loading, setAvatarPath, adopt } = useAuth();
   const router = useRouter();
+  const adminNotesUnread = useAdminChatUnread(user?.uid, user?.isAdmin === true);
   const scrollRef = useRef<HTMLElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const libraryInputRef = useRef<HTMLInputElement>(null);
@@ -33,9 +39,13 @@ export default function ProfilePage() {
   const [cropBlob, setCropBlob] = useState<Blob | null>(null);
   const [myPosts, setMyPosts] = useState<Post[] | null>(null);
   const [visible, setVisible] = useState(PAGE);
+  const sentinelRef = useRef<HTMLDivElement>(null);
   const [activeComments, setActiveComments] = useState<Post | null>(null);
   const [commentBumps, setCommentBumps] = useState<Record<string, number>>({});
   const avatarSrc = useAuthedImage(avatarPath);
+  const { hidden } = useBlockSets(user?.uid);
+  const podium = usePodium(user?.uid);
+  const streaks = useStreaks(user?.uid);
 
   useEffect(() => {
     if (!loading && !user) router.replace("/login");
@@ -61,6 +71,25 @@ export default function ProfilePage() {
     };
   }, [user]);
 
+  // Reveal more of the already-fetched list as the sentinel nears the
+  // viewport — every post is loaded up front (see the query above), so
+  // "loading more" is just widening the slice, no extra fetch involved.
+  // Depends on myPosts: the sentinel only enters the DOM once the fetch
+  // above resolves, so the observer must (re)attach after that, not just
+  // once at mount when the ref is still null.
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) setVisible((v) => v + PAGE);
+      },
+      { root: scrollRef.current }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [myPosts, visible]);
+
   // Picking a file opens the crop modal; the upload happens on crop confirm.
   function handleAvatarPick(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -80,15 +109,8 @@ export default function ProfilePage() {
     setBusy(true);
     try {
       const path = `avatars/${user.uid}/${Date.now()}-avatar.jpg`;
-      await uploadBytes(ref(storage, path), blob, { contentType: "image/jpeg" });
-      await Promise.all([
-        setDoc(doc(db, "users", user.email!), { avatarPath: path }, { merge: true }),
-        setDoc(
-          doc(db, "publicProfiles", user.uid),
-          { uid: user.uid, avatarPath: path },
-          { merge: true }
-        ),
-      ]);
+      await uploadFile(path, blob);
+      await updateDoc(doc(db, "users", user.uid), { avatarPath: path });
       setAvatarPath(path);
       invalidateAvatarMap();
     } finally {
@@ -103,7 +125,7 @@ export default function ProfilePage() {
     else if (action === "Edit Crop" && avatarPath) {
       setBusy(true);
       try {
-        setCropBlob(await getBlob(ref(storage, avatarPath)));
+        setCropBlob(await downloadFile(avatarPath));
       } finally {
         setBusy(false);
       }
@@ -172,31 +194,61 @@ export default function ProfilePage() {
 
           <h1 className="text-xl font-extrabold tracking-[-0.3px]">{username}</h1>
           <p className="mt-1 text-xs text-mut">{user.email}</p>
-          {user.metadata.creationTime && (
-            <p className="mt-1 text-xs text-mut">
-              JOINED{" "}
-              {new Date(user.metadata.creationTime)
-                .toLocaleDateString(undefined, { month: "long", year: "numeric" })
-                .toUpperCase()}
-            </p>
-          )}
+          <p className="mt-1 text-xs text-mut">
+            JOINED{" "}
+            {new Date(user.createdAt)
+              .toLocaleDateString(undefined, { month: "long", year: "numeric" })
+              .toUpperCase()}
+          </p>
           {myPosts !== null && (
-            <p className="mt-1 text-xs font-semibold tracking-[0.5px] text-mut">
-              {myPosts.length} POST{myPosts.length === 1 ? "" : "S"}
-            </p>
+            <>
+              <p className="mt-1 text-xs font-semibold tracking-[0.5px] text-mut">
+                {myPosts.length} POST{myPosts.length === 1 ? "" : "S"}
+              </p>
+              <LikeTotal
+                likes={countLikes(myPosts, hidden)}
+                place={podium.get(user.uid) ?? null}
+              />
+              {/* Spelled out here rather than the bare number a name row
+                  gets — the profile is where you come to read someone's
+                  standing, and it sits in the same quiet uppercase as the
+                  counts above it. */}
+              <StreakFlame
+                days={streaks.get(user.uid) ?? 0}
+                label
+                className="mt-1.5 text-xs tracking-[0.5px]"
+              />
+            </>
           )}
 
           <div className="mt-4 flex gap-2">
-            {isAdmin && (
-              <button
-                onClick={() => router.push("/admin")}
-                className="rounded-lg border-[0.5px] border-edge px-5 py-2 text-[11px] font-bold uppercase tracking-[1.5px] text-mut transition-colors hover:border-mut hover:text-white"
-              >
-                Admin
-              </button>
+            {user.isAdmin && (
+              <>
+                <button
+                  onClick={() => router.push("/admin")}
+                  className="rounded-lg border-[0.5px] border-edge px-5 py-2 text-[11px] font-bold uppercase tracking-[1.5px] text-mut transition-colors hover:border-mut hover:text-white"
+                >
+                  Admin
+                </button>
+                {/* The one way into the notes inbox from a browser — /dm is
+                    app-only, and reading bug reports shouldn't require a
+                    phone. */}
+                <button
+                  onClick={() => router.push(ADMIN_CHAT_HREF)}
+                  className="relative rounded-lg border-[0.5px] border-edge px-5 py-2 text-[11px] font-bold uppercase tracking-[1.5px] text-mut transition-colors hover:border-mut hover:text-white"
+                >
+                  Notes
+                  {adminNotesUnread > 0 && (
+                    <span
+                      className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-heart"
+                      aria-label="Unread notes"
+                    />
+                  )}
+                </button>
+              </>
             )}
             <button
-              onClick={() => signOut(auth)}
+              onClick={() => signOut().finally(() => adopt({ user: null }))}
               className="rounded-lg border-[0.5px] border-edge px-5 py-2 text-[11px] font-bold uppercase tracking-[1.5px] text-mut transition-colors hover:border-mut hover:text-white"
             >
               Sign Out
@@ -249,12 +301,7 @@ export default function ProfilePage() {
         ))}
 
         {myPosts !== null && visible < myPosts.length && (
-          <button
-            onClick={() => setVisible((v) => v + PAGE)}
-            className="mx-auto my-6 block rounded-lg border-[0.5px] border-edge px-6 py-2.5 text-[11px] font-bold uppercase tracking-[1.5px] text-mut transition-colors hover:border-mut hover:text-white"
-          >
-            Load More
-          </button>
+          <div ref={sentinelRef} className="h-10" />
         )}
       </main>
 
@@ -284,7 +331,7 @@ export default function ProfilePage() {
           onClose={() => setCapturedFile(null)}
           onPosted={() => {
             setCapturedFile(null);
-            router.push("/feed");
+            router.push("/");
           }}
         />
       )}
@@ -301,7 +348,7 @@ export default function ProfilePage() {
             {["Take Photo", "Photo Library", "Edit Crop"].map((label) => (
               <button
                 key={label}
-                onClick={() => void handleAvatarAction(label)}
+                onClick={() => handleAvatarAction(label)}
                 className="block w-full border-t-[0.5px] border-[#2c2c2e] px-5 py-4 text-left text-[17px] font-semibold text-white transition-colors active:bg-[#28282a]"
               >
                 {label}

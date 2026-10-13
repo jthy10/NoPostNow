@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  db,
   collection,
   collectionGroup,
   doc,
@@ -8,19 +9,23 @@ import {
   getDocs,
   query,
   where,
-} from "firebase/firestore";
-import type { User } from "firebase/auth";
-import { db } from "./firebase";
+} from "./store";
+import type { User } from "./account";
+import { site } from "./site";
+
+function slug(name: string) {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "export";
+}
 
 // "Download my data": everything the app stores about this member, gathered
-// client-side with their own credentials (so security rules are the audit —
+// client-side with their own session (so the server's access rules are the audit —
 // nothing is exported that they couldn't already read) and saved as one JSON
 // file. Photos aren't embedded — each post lists its storage path, and the
 // download button on any post fetches the original.
 
 type Jsonish = Record<string, unknown>;
 
-// Firestore Timestamps aren't JSON — flatten every value that quacks like one.
+// Timestamps aren't JSON — flatten every value that quacks like one.
 function plain(data: Record<string, unknown>): Jsonish {
   const out: Jsonish = {};
   for (const [k, v] of Object.entries(data)) {
@@ -37,11 +42,10 @@ function plain(data: Record<string, unknown>): Jsonish {
 
 export async function buildExport(user: User): Promise<Jsonish> {
   const uid = user.uid;
-  const email = user.email || "";
 
   const [profile, prefs, blocks, myPosts, myComments, likedPosts, threads] =
     await Promise.all([
-      getDoc(doc(db, "users", email)).catch(() => null),
+      getDoc(doc(db, "users", uid)).catch(() => null),
       getDoc(doc(db, "notifPrefs", uid)).catch(() => null),
       getDoc(doc(db, "blocks", uid)).catch(() => null),
       getDocs(query(collection(db, "photos"), where("userUUID", "==", uid))),
@@ -52,7 +56,7 @@ export async function buildExport(user: User): Promise<Jsonish> {
       ),
     ]);
 
-  // DM messages, thread by thread (small crew — a handful of threads).
+  // DM messages, thread by thread (few members — a handful of threads).
   const dms: Jsonish[] = [];
   for (const t of threads?.docs ?? []) {
     const messages = await getDocs(
@@ -67,10 +71,9 @@ export async function buildExport(user: User): Promise<Jsonish> {
   return {
     exportedAt: new Date().toISOString(),
     account: {
-      email,
+      email: user.email,
       uid,
-      created: user.metadata.creationTime ?? null,
-      lastSignIn: user.metadata.lastSignInTime ?? null,
+      created: new Date(user.createdAt).toISOString(),
     },
     profile: profile?.exists() ? plain(profile.data()!) : null,
     notificationPreferences: prefs?.exists() ? plain(prefs.data()!) : null,
@@ -92,7 +95,7 @@ export async function downloadExport(user: User) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `nopostnow-export-${new Date().toISOString().slice(0, 10)}.json`;
+  a.download = `${slug(site().siteName)}-export-${new Date().toISOString().slice(0, 10)}.json`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 30_000);
 }

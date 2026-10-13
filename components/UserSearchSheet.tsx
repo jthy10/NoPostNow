@@ -13,7 +13,7 @@ import {
 } from "@/lib/sheet";
 import Avatar from "./Avatar";
 
-// "New message": search the crew by name, tap to open the thread.
+// "New message": search members by name, tap to open the thread.
 // Friends who don't have the app yet are still messageable — the row says
 // you'll be inviting them, and the thread view explains how that works.
 export default function UserSearchSheet({

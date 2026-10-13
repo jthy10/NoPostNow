@@ -1,7 +1,9 @@
 "use client";
 
-import { doc, setDoc, serverTimestamp } from "firebase/firestore";
-import { auth, db } from "@/lib/firebase";
+import { db, doc, setDoc, serverTimestamp } from "./store";
+import { apiPost } from "./api";
+import { currentUid } from "./account";
+import { site } from "./site";
 import {
   recordPostNotification,
   recordCommentNotification,
@@ -10,9 +12,11 @@ import {
   recordCommentLikeNotification,
 } from "@/lib/notifications";
 
-// Keys are base64url — strip anything else. The value pasted into Vercel
-// carries a BOM (﻿) that made atob throw on every device.
-const VAPID_KEY = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY?.replace(/[^A-Za-z0-9_-]/g, "");
+// The server's push signing key, public half. Empty when the host hasn't
+// set push up, in which case notifications are simply unavailable.
+function vapidKey() {
+  return site().vapidPublicKey.replace(/[^A-Za-z0-9_-]/g, "");
+}
 
 // Launched from a home-screen icon (vs a browser tab)?
 export function isStandalone() {
@@ -33,7 +37,7 @@ export function pushSupported() {
     "serviceWorker" in navigator &&
     "PushManager" in window &&
     "Notification" in window &&
-    Boolean(VAPID_KEY)
+    Boolean(vapidKey())
   );
 }
 
@@ -59,7 +63,7 @@ async function endpointDocId(endpoint: string) {
 export type PushOutcome = { ok: true } | { ok: false; reason: string };
 
 function errMsg(e: unknown) {
-  // String codes (Firestore's "permission-denied") beat the message; numeric
+  // String codes (the server's "permission-denied") beat the message; numeric
   // codes (DOMException legacy) don't — prefer the name then.
   if (e && typeof e === "object" && "code" in e) {
     const code = (e as { code: unknown }).code;
@@ -98,7 +102,7 @@ export async function ensurePushSubscription(uid: string): Promise<PushOutcome> 
     if (!sub) {
       sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(VAPID_KEY!),
+        applicationServerKey: urlBase64ToUint8Array(vapidKey()),
       });
     }
   } catch (e) {
@@ -138,29 +142,22 @@ export async function requestPushPermission(uid: string): Promise<PushOutcome> {
 
 // Fire-and-forget notification fan-out. Never allowed to break or slow down
 // the action (post/comment/like/DM) that triggered it.
+//
+// The body describes the event only. The sender's display name is not sent —
+// the route reads it from their users doc, so a hand-rolled client can't sign
+// a push with someone else's name.
 async function sendNotify(body: Record<string, string | string[]>) {
   try {
-    const user = auth.currentUser;
-    if (!user) return;
-    const token = await user.getIdToken();
-    await fetch("/api/notify-post", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify(body),
-    });
+    await apiPost("/api/notify-post", body);
   } catch {
-    // ignore — the triggering action succeeded regardless
+    // Push is best-effort — never block the action that triggered it.
   }
 }
 
-// Each notify* sends the push AND records the in-app notification items
-// (the bell feed), so callers stay one-call. Both halves are best-effort.
-
-// "X just posted" → everyone.
 export async function notifyNewPost(username: string, caption: string, postId: string) {
-  const uid = auth.currentUser?.uid;
+  const uid = currentUid();
   await Promise.allSettled([
-    sendNotify({ type: "post", postId }),
+    sendNotify({ type: "post", caption, postId }),
     uid ? recordPostNotification(uid, username, postId, caption) : Promise.resolve(),
   ]);
 }
@@ -173,26 +170,31 @@ export async function notifyComment(
   text: string,
   ownerUid: string,
   postId: string,
-  participantUids: string[],
-  commentId: string,
+  participantUids: string[] = []
 ) {
-  const uid = auth.currentUser?.uid;
+  const uid = currentUid();
   const targets = [...new Set([ownerUid, ...participantUids])].filter(
     (u) => u && u !== uid
   );
+  if (targets.length === 0) return;
   await Promise.allSettled([
-    sendNotify({ type: "comment", postId, commentId }),
-    uid && targets.length > 0
-      ? recordCommentNotification(uid, username, postId, text, targets)
-      : Promise.resolve(),
+    sendNotify({ type: "comment", text, targetUids: targets, postId }),
+    uid ? recordCommentNotification(uid, username, postId, text, targets) : Promise.resolve(),
   ]);
 }
 
-// "X liked your photo" → the post owner only.
-export async function notifyLike(username: string, targetUid: string, postId: string) {
-  const uid = auth.currentUser?.uid;
+// "X liked your photo" → the post owner only. Legacy Anonymous imports have no
+// recorded owner, so there is nobody to tell; bail rather than send a targeted
+// push with an empty target list (the route rejects those too, belt and braces).
+export async function notifyLike(
+  username: string,
+  targetUid: string | null | undefined,
+  postId: string
+) {
+  const uid = currentUid();
+  if (!targetUid || targetUid === uid) return;
   await Promise.allSettled([
-    sendNotify({ type: "like", postId }),
+    sendNotify({ type: "like", targetUid, postId }),
     uid ? recordLikeNotification(uid, username, postId, targetUid) : Promise.resolve(),
   ]);
 }
@@ -206,36 +208,43 @@ export async function notifyMention(
   targetUids: string[],
   postId: string
 ) {
-  const uid = auth.currentUser?.uid;
+  const uid = currentUid();
   const targets = [...new Set(targetUids)].filter((u) => u && u !== uid);
   if (targets.length === 0) return;
   await Promise.allSettled([
+    sendNotify({ type: "mention", text, targetUids: targets, postId }),
     uid ? recordMentionNotification(uid, username, postId, text, targets) : Promise.resolve(),
   ]);
 }
 
 // "X liked your comment" → the comment's author only.
-export async function notifyCommentLike(
-  username: string,
-  authorUid: string,
-  postId: string,
-  commentId: string,
-) {
-  const uid = auth.currentUser?.uid;
+export async function notifyCommentLike(username: string, authorUid: string, postId: string) {
+  const uid = currentUid();
   if (!authorUid || authorUid === uid) return;
   await Promise.allSettled([
-    sendNotify({ type: "commentLike", postId, commentId }),
+    sendNotify({ type: "commentLike", targetUid: authorUid, postId }),
     uid ? recordCommentLikeNotification(uid, username, postId, authorUid) : Promise.resolve(),
   ]);
 }
 
 // "X: message" → the recipient's devices. DMs never touch the bell feed —
-// they land straight in /dm with their own badge.
-export async function notifyDm(
-  username: string,
-  text: string,
-  targetUid: string,
-  threadId: string
-) {
-  await sendNotify({ type: "dm", threadId });
+// they land straight in /dm with their own badge. No name argument: the route
+// resolves the sender itself and verifies they belong to the thread.
+export async function notifyDm(text: string, targetUid: string, threadId: string) {
+  if (!targetUid || !threadId) return;
+  await sendNotify({ type: "dm", text, targetUid, threadId });
+}
+
+// A member's note in the admins chat → the admin's devices. No target
+// uid is sent: the route resolves the admin from their own users doc, so a
+// hand-rolled client can't aim this at somebody else.
+export async function notifyAdminNote(text: string) {
+  await sendNotify({ type: "adminNote", text });
+}
+
+// The admin's reply → that member's devices, signed as the site admin. The route
+// verifies the caller really is the admin before it sends.
+export async function notifyAdminReply(text: string, targetUid: string) {
+  if (!targetUid) return;
+  await sendNotify({ type: "adminReply", text, targetUid });
 }

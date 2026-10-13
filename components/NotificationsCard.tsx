@@ -7,6 +7,7 @@ import {
   pushSupported,
   requestPushPermission,
 } from "@/lib/push";
+import { site } from "@/lib/site";
 
 // Shown only inside the installed PWA, where push is actually possible.
 // iOS requires the permission request to come from a tap, so this card is
@@ -111,7 +112,7 @@ export default function NotificationsCard({ uid }: { uid: string }) {
                 }`}
               >
                 {state === "blocked"
-                  ? "Enable them in Settings → Notifications → NoPostNow to know when friends post."
+                  ? `Enable them in Settings → Notifications → ${site().siteName} to know when friends post.`
                   : failReason
                     ? `Enabling notifications failed (${failReason}). Try again.`
                     : "Know the second a friend posts."}

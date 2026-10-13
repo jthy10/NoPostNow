@@ -14,6 +14,8 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Node administration scripts:
     "scripts/**",
+    "tests/**",
+    ".runtime/**",
   ]),
 ]);
 

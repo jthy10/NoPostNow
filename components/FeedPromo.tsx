@@ -6,7 +6,7 @@ import { isPhone, isStandalone } from "@/lib/push";
 // Rotating copy — index picks the message so consecutive strips differ.
 const MESSAGES = [
   "Psst — try our app. You’re missing out.",
-  "Get notified when your friends post. Add NoPostNow to your Home Screen.",
+  "Get notified when your friends post. Add this to your Home Screen.",
   "This feed hits different as an app.",
   "Install steps are at the top of the feed. Takes 10 seconds.",
   "Add it once — updates arrive automatically. No app store, ever.",
