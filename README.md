@@ -124,6 +124,10 @@ npm run dev     # run with live reload
 npm run check   # lint, typecheck, tests, production build
 ```
 
+The project's website, <https://nopostnow.com>, is the static page in
+[`site/`](site/). `vercel.json` tells the host to publish that folder as-is;
+neither is used by a self-hosted site.
+
 Contributions are welcome — read [CONTRIBUTING.md](CONTRIBUTING.md) and the
 [Code of Conduct](CODE_OF_CONDUCT.md) first.
 
