@@ -6,6 +6,11 @@ import { getAccount, hashToken, randomToken, type Account } from "./core/account
 // its hash, so a copy of the database cannot be replayed as a login.
 
 export const SESSION_COOKIE = "npn_session";
+// Over HTTPS the cookie carries the __Host- prefix, which browsers only accept
+// from this exact host. A site that shares a parent domain with other sites
+// (as on a relay) therefore cannot have its session cookie planted or
+// overwritten by a neighbour.
+const SECURE_SESSION_COOKIE = "__Host-npn_session";
 const SESSION_DAYS = 90;
 const SESSION_MS = SESSION_DAYS * 86_400_000;
 // Admin actions need the password to have been entered this recently.
@@ -43,17 +48,27 @@ export async function startSession(uid: string, opts: { mfa: boolean }) {
     )
     .run(hashToken(token), uid, now, now, now, opts.mfa ? 1 : 0);
   db().prepare("DELETE FROM sessions WHERE last_seen < ?").run(now - SESSION_MS);
-  (await cookies()).set(SESSION_COOKIE, token, {
+  const secure = await isSecureRequest();
+  (await cookies()).set(secure ? SECURE_SESSION_COOKIE : SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: await isSecureRequest(),
+    secure,
     path: "/",
     maxAge: SESSION_DAYS * 86_400,
   });
 }
 
+// The prefixed cookie is the only one honoured over HTTPS, so a plain cookie
+// set by some other means can never stand in for it.
+async function sessionToken(): Promise<string | undefined> {
+  const jar = await cookies();
+  return (await isSecureRequest())
+    ? jar.get(SECURE_SESSION_COOKIE)?.value
+    : jar.get(SESSION_COOKIE)?.value;
+}
+
 export async function getSession(): Promise<Session | null> {
-  const token = (await cookies()).get(SESSION_COOKIE)?.value;
+  const token = await sessionToken();
   if (!token) return null;
   const tokenHash = hashToken(token);
   const row = db().prepare("SELECT * FROM sessions WHERE token_hash = ?").get(tokenHash) as
@@ -76,9 +91,12 @@ export async function getSession(): Promise<Session | null> {
 
 export async function endSession() {
   const jar = await cookies();
-  const token = jar.get(SESSION_COOKIE)?.value;
+  const token = await sessionToken();
   if (token) db().prepare("DELETE FROM sessions WHERE token_hash = ?").run(hashToken(token));
   jar.delete(SESSION_COOKIE);
+  if (await isSecureRequest()) {
+    jar.set(SECURE_SESSION_COOKIE, "", { httpOnly: true, sameSite: "lax", secure: true, path: "/", maxAge: 0 });
+  }
 }
 
 export function endOtherSessions(uid: string, keepTokenHash: string) {

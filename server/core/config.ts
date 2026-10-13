@@ -36,6 +36,9 @@ export type SiteConfig = {
   // Set when the host accepts the terms during setup.
   termsAcceptedAt: string;
   vapid: { publicKey: string; privateKey: string; subject: string };
+  // Set when the site is published through a relay: the relay's address, the
+  // name this site holds there, and the secret that proves it owns the name.
+  relay: { url: string; name: string; secret: string };
 };
 
 export const POINTER_FILE = "nopostnow.json";
@@ -58,6 +61,7 @@ export const DEFAULT_CONFIG: SiteConfig = {
   },
   termsAcceptedAt: "",
   vapid: { publicKey: "", privateKey: "", subject: "" },
+  relay: { url: "", name: "", secret: "" },
 };
 
 // Where the data folder lives: an explicit environment variable wins, then the
@@ -110,6 +114,8 @@ export function normalizeConfig(raw: unknown): SiteConfig {
     unknown
   >;
   const v = (r.vapid && typeof r.vapid === "object" ? r.vapid : {}) as Record<string, unknown>;
+  const t = (r.relay && typeof r.relay === "object" ? r.relay : {}) as Record<string, unknown>;
+  const relayUrl = str(t.url, "", 300).replace(/\/+$/, "");
   const port = Number(r.port);
   const publicUrl = str(r.publicUrl, "", 300).replace(/\/+$/, "");
   return {
@@ -134,6 +140,11 @@ export function normalizeConfig(raw: unknown): SiteConfig {
       publicKey: str(v.publicKey, "", 200),
       privateKey: str(v.privateKey, "", 200),
       subject: str(v.subject, "", 200),
+    },
+    relay: {
+      url: /^https?:\/\//.test(relayUrl) ? relayUrl : "",
+      name: str(t.name, "", 40),
+      secret: str(t.secret, "", 200),
     },
   };
 }

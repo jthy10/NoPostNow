@@ -216,6 +216,20 @@ ok("comments gone", (await b.store({ op: "query", spec: { group: "comments" } })
 ok("file gone", (await b.call(`/api/files/${img}`, { method: "GET" })).status === 404);
 ok("deleted can't login", (await a.call("/api/auth/login", { body: { email: "alice2@example.com", password: "password-aaa" } })).status === 401);
 
+// --- behind https the session cookie is host-locked
+{
+  const res = await fetch(BASE + "/api/auth/login", {
+    method: "POST",
+    headers: { "x-nopostnow": "1", "content-type": "application/json", "x-forwarded-proto": "https" },
+    body: JSON.stringify({ email: "admin@example.com", password: "correct-horse-9" }),
+  });
+  const cookie = (res.headers.getSetCookie?.() ?? []).join(";");
+  ok("https cookie is __Host- and Secure", cookie.startsWith("__Host-npn_session=") && /; Secure/i.test(cookie), cookie.slice(0, 40));
+  const value = cookie.split(";")[0].split("=")[1];
+  const plain = await fetch(BASE + "/api/auth/session", { headers: { "x-forwarded-proto": "https", cookie: `npn_session=${value}` } });
+  ok("plain cookie ignored over https", (await plain.json()).user === null);
+}
+
 // --- logout
 await b.call("/api/auth/logout");
 ok("logged out", (await b.store({ op: "query", spec: { parent: "photos" } })).status === 401);
