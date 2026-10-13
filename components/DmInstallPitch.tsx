@@ -2,6 +2,7 @@
 
 import PageHeader from "./PageHeader";
 import InstallBanner from "./InstallBanner";
+import { site } from "@/lib/site";
 
 // DMs are app-only. Anyone who lands on /dm from a browser tab gets the
 // pitch instead: what it is, and exactly how to get it. InstallBanner
@@ -25,13 +26,13 @@ export default function DmInstallPitch() {
           </svg>
           <p className="text-base font-extrabold">Messages live in the app</p>
           <p className="text-[13px] leading-relaxed text-mut">
-            Install NoPostNow on your Home Screen to send and read DMs — you&apos;ll
+            Install {site().siteName} on your Home Screen to send and read DMs — you&apos;ll
             get a notification the second a friend messages you.
           </p>
         </div>
         <InstallBanner />
         <p className="px-8 pt-3 text-center text-[11px] leading-relaxed text-dim sm:block hidden">
-          On your phone, open nopostnow.com and add it to your Home Screen.
+          On your phone, open this site in your browser and add it to your Home Screen.
         </p>
       </main>
     </>

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { isStandalone } from "@/lib/push";
+import { site } from "@/lib/site";
 
 // Chrome's install event — not in the TS DOM lib yet.
 type BeforeInstallPromptEvent = Event & { prompt: () => Promise<void> };
@@ -47,6 +48,8 @@ function Step({ n, children }: { n: number; children: React.ReactNode }) {
 // OPEN and just goes to the feed.
 export default function InstallCta({ variant }: { variant: "pill" | "full" }) {
   const [open, setOpen] = useState(false);
+  // Where this site lives, for the "open it on your phone" instructions.
+  const [address, setAddress] = useState("this site");
   const [installed, setInstalled] = useState(false);
   const [platform, setPlatform] = useState<Platform>("desktop");
   const [needsSafari, setNeedsSafari] = useState(false);
@@ -55,6 +58,7 @@ export default function InstallCta({ variant }: { variant: "pill" | "full" }) {
   useEffect(() => {
     /* eslint-disable react-hooks/set-state-in-effect -- one-time environment sniff on mount */
     if (isStandalone()) setInstalled(true);
+    setAddress(window.location.host);
     if (/iPad|iPhone|iPod/.test(navigator.userAgent)) {
       setPlatform("ios");
       if (isIosNonSafari(navigator.userAgent)) setNeedsSafari(true);
@@ -103,7 +107,7 @@ export default function InstallCta({ variant }: { variant: "pill" | "full" }) {
   return (
     <>
       <button onClick={handleClick} className={buttonClass}>
-        {variant === "pill" ? "GET" : "Install NoPostNow"}
+        {variant === "pill" ? "GET" : `Install ${site().siteName}`}
       </button>
 
       {open && (
@@ -114,7 +118,7 @@ export default function InstallCta({ variant }: { variant: "pill" | "full" }) {
           <div
             role="dialog"
             aria-modal="true"
-            aria-label="Install NoPostNow"
+            aria-label={`Install ${site().siteName}`}
             className="max-h-[85vh] w-full max-w-sm overflow-y-auto rounded-2xl border-[0.5px] border-edge bg-card p-6 animate-[sheet-up_0.25s_ease-out]"
             onClick={(e) => e.stopPropagation()}
           >
@@ -122,7 +126,7 @@ export default function InstallCta({ variant }: { variant: "pill" | "full" }) {
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src="/icon-192.png" alt="" className="h-12 w-12 shrink-0 rounded-xl" />
               <div className="min-w-0 flex-1">
-                <p className="text-base font-extrabold">Install NoPostNow</p>
+                <p className="text-base font-extrabold">Install {site().siteName}</p>
                 <p className="mt-0.5 text-[11px] leading-snug text-meta">
                   No app store, no download — it installs straight from the browser.
                 </p>
@@ -143,7 +147,7 @@ export default function InstallCta({ variant }: { variant: "pill" | "full" }) {
               {platform === "ios" && needsSafari ? (
                 <p className="text-sm leading-relaxed text-body">
                   This browser can&rsquo;t install apps — that&rsquo;s an iPhone rule, not ours.
-                  Open <span className="font-bold text-white">nopostnow.com/app</span> in{" "}
+                  Open <span className="font-bold text-white">{address}/app</span> in{" "}
                   <span className="font-bold text-white">Safari</span> and tap GET there.
                 </p>
               ) : platform === "ios" ? (
@@ -151,7 +155,7 @@ export default function InstallCta({ variant }: { variant: "pill" | "full" }) {
                   <Step n={1}>Open this page in <span className="font-bold text-white">Safari</span> (if you&rsquo;re not already)</Step>
                   <Step n={2}>Tap the Share button {shareIcon} at the bottom</Step>
                   <Step n={3}>Scroll down and tap <span className="font-bold text-white">&ldquo;Add to Home Screen&rdquo;</span></Step>
-                  <Step n={4}>Open <span className="font-bold text-white">NoPostNow</span> from your Home Screen</Step>
+                  <Step n={4}>Open <span className="font-bold text-white">{site().siteName}</span> from your Home Screen</Step>
                 </ol>
               ) : platform === "android" && installEvt ? (
                 <button
@@ -164,12 +168,12 @@ export default function InstallCta({ variant }: { variant: "pill" | "full" }) {
                 <ol className="flex flex-col gap-3">
                   <Step n={1}>Tap the <span className="font-bold text-white">⋮</span> menu in the top corner of your browser</Step>
                   <Step n={2}>Tap <span className="font-bold text-white">&ldquo;Add to Home screen&rdquo;</span></Step>
-                  <Step n={3}>Open <span className="font-bold text-white">NoPostNow</span> from your Home Screen</Step>
+                  <Step n={3}>Open <span className="font-bold text-white">{site().siteName}</span> from your Home Screen</Step>
                 </ol>
               ) : (
                 <p className="text-sm leading-relaxed text-body">
                   The app lives on phones. Open{" "}
-                  <span className="font-bold text-white">nopostnow.com/app</span> on your phone and
+                  <span className="font-bold text-white">{address}/app</span> on your phone and
                   tap GET.
                 </p>
               )}

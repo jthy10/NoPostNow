@@ -2,16 +2,18 @@
 
 import { useEffect, useState } from "react";
 import {
+  db,
   collection,
   doc,
+  getDoc,
+  getDocs,
   onSnapshot,
   query,
   setDoc,
   where,
   arrayUnion,
   arrayRemove,
-} from "firebase/firestore";
-import { db } from "./firebase";
+} from "./store";
 import { invalidateFeedCache } from "./feed-cache";
 
 // Blocking is mutual invisibility: neither side sees the other's posts,
@@ -30,12 +32,17 @@ export type BlockSets = {
   blocked: Set<string>; // people I blocked
   blockedBy: Set<string>; // people who blocked me
   hidden: Set<string>; // union — hide these uids everywhere
+  // Both listeners have reported in (an error counts). Views that would
+  // otherwise flash a blocked person's content before the lists land — a
+  // permalink opened straight from a link — wait on this instead.
+  ready: boolean;
 };
 
 const EMPTY: BlockSets = {
   blocked: new Set(),
   blockedBy: new Set(),
   hidden: new Set(),
+  ready: false,
 };
 
 let current: BlockSets = EMPTY;
@@ -43,8 +50,20 @@ let activeUid: string | null = null;
 let stopListeners: (() => void) | null = null;
 const subscribers = new Set<(s: BlockSets) => void>();
 
+// Per-listener state. "ok" means we hold the real list; "error" means rules
+// or the network said no and we're falling back to empty. Only "ok" on both
+// halves makes the cached sets safe to answer a one-shot read from.
+type Status = "pending" | "ok" | "error";
+let mineStatus: Status = "pending";
+let theirsStatus: Status = "pending";
+
 function publish(blocked: Set<string>, blockedBy: Set<string>) {
-  current = { blocked, blockedBy, hidden: new Set([...blocked, ...blockedBy]) };
+  current = {
+    blocked,
+    blockedBy,
+    hidden: new Set([...blocked, ...blockedBy]),
+    ready: mineStatus !== "pending" && theirsStatus !== "pending",
+  };
   subscribers.forEach((fn) => fn(current));
 }
 
@@ -53,6 +72,8 @@ function ensureListeners(uid: string) {
   stopListeners?.();
   activeUid = uid;
   current = EMPTY;
+  mineStatus = "pending";
+  theirsStatus = "pending";
 
   let blocked = new Set<string>();
   let blockedBy = new Set<string>();
@@ -62,23 +83,33 @@ function ensureListeners(uid: string) {
     (snap) => {
       const list = snap.exists() ? (snap.data().blocked as string[] | undefined) ?? [] : [];
       blocked = new Set(list.filter((x) => typeof x === "string"));
+      mineStatus = "ok";
       publish(blocked, blockedBy);
     },
-    () => publish((blocked = new Set()), blockedBy)
+    () => {
+      mineStatus = "error";
+      publish((blocked = new Set()), blockedBy);
+    }
   );
   const stopTheirs = onSnapshot(
     query(collection(db, "blocks"), where("blocked", "array-contains", uid)),
     (snap) => {
       blockedBy = new Set(snap.docs.map((d) => d.id));
+      theirsStatus = "ok";
       publish(blocked, blockedBy);
     },
-    () => publish(blocked, (blockedBy = new Set()))
+    () => {
+      theirsStatus = "error";
+      publish(blocked, (blockedBy = new Set()));
+    }
   );
   stopListeners = () => {
     stopMine();
     stopTheirs();
     stopListeners = null;
     activeUid = null;
+    mineStatus = "pending";
+    theirsStatus = "pending";
   };
 }
 
@@ -104,6 +135,27 @@ export function useBlockSets(uid: string | undefined): BlockSets {
   }, [uid]);
 
   return sets;
+}
+
+// The same union, for write paths that run outside React — the bell fan-out
+// decides who to notify before any of this is on screen. Answers from the
+// live store only when both listeners actually delivered; a store that is
+// still pending (or errored to empty) would hand back "nobody is hidden",
+// which is exactly the wrong answer to fan out on. Throws if the one-shot
+// read fails — callers decide what an unknown answer means for them.
+export async function fetchHiddenUids(uid: string): Promise<Set<string>> {
+  if (activeUid === uid && mineStatus === "ok" && theirsStatus === "ok") {
+    return current.hidden;
+  }
+  const [mine, theirs] = await Promise.all([
+    getDoc(doc(db, "blocks", uid)),
+    getDocs(query(collection(db, "blocks"), where("blocked", "array-contains", uid))),
+  ]);
+  const list = mine.exists() ? (mine.data().blocked as string[] | undefined) ?? [] : [];
+  return new Set([
+    ...list.filter((x): x is string => typeof x === "string"),
+    ...theirs.docs.map((d) => d.id),
+  ]);
 }
 
 export async function blockUser(myUid: string, targetUid: string) {

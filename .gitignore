@@ -44,11 +44,14 @@ next-env.d.ts
 /.agents/
 /.claude/
 
-# Firebase local state and credentials
-/.firebase/
-firebase-debug.log*
-.runtimeconfig.json
-**/*firebase-adminsdk*.json
-**/service-account*.json
-**/service_account*.json
-**/application_default_credentials.json
+# A site's own data and settings never belong in the repository
+/data/
+/nopostnow.json
+/.runtime/
+/relay-data/
+*.db
+*.db-shm
+*.db-wal
+
+# assistant instruction files stay local
+/CLAUDE.md

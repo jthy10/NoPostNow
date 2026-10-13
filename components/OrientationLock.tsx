@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { isPhone, isStandalone } from "@/lib/push";
+import { site } from "@/lib/site";
 
 // iOS ignores the manifest's orientation lock, so inside the installed PWA a
 // landscape turn gets a full-screen "rotate back" overlay instead. Android is
@@ -37,7 +38,7 @@ export default function OrientationLock() {
       <p className="text-[11px] font-bold uppercase tracking-[2px] text-mut">
         Rotate your phone
       </p>
-      <p className="-mt-2 text-[11px] text-dim">NoPostNow is portrait only</p>
+      <p className="-mt-2 text-[11px] text-dim">{site().siteName} is portrait only</p>
     </div>
   );
 }

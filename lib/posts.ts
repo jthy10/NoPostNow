@@ -1,4 +1,5 @@
 import {
+  db,
   collection,
   doc,
   addDoc,
@@ -13,16 +14,16 @@ import {
   arrayUnion,
   arrayRemove,
   serverTimestamp,
+  Timestamp,
   getCountFromServer,
   QueryDocumentSnapshot,
   DocumentData,
-} from "firebase/firestore";
-import { ref, uploadBytes, uploadBytesResumable } from "firebase/storage";
-import { auth, db, storage } from "./firebase";
+} from "./store";
+import { uploadFile, safeFileName } from "./files";
 import { invalidateFeedCache } from "./feed-cache";
+import { isSpecialDate, readsDailyMoment } from "./site";
 
-// Compressed feed copies live under photos/display/** (same top-level folder
-// so the existing storage rules cover them). Originals are never modified —
+// Compressed feed copies live under photos/display/**. Originals are never modified —
 // the download button and full-quality use cases always read imagePath.
 export function displayVariantPath(imagePath: string) {
   return imagePath.replace(/^photos\//, "photos/display/");
@@ -44,46 +45,61 @@ export type Post = {
   // Soft delete: flagged posts stay on the server (admin can recover them)
   // but never render anywhere in the app.
   deleted?: boolean;
-  // Migrated from the Hostinger site — see postDate() for the timestamp caveat.
-  legacy?: boolean;
+  // When the poster opened the camera (client clock). The daily-moment badge
+  // judges this instant, not the upload's server timestamp, so a slow upload
+  // can't cost anyone the minute.
+  capturedAt?: { toDate: () => Date } | null;
 };
 
-// Legacy posts were imported with their New York wall-clock time stored as if
-// it were UTC (see scripts/migrate-legacy.js), so reading them back directly
-// renders hours early. Reinterpret the stored UTC fields as America/New_York
-// wall time to recover the real instant — DST-correct per post.
-function newYorkOffsetMs(at: Date) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).formatToParts(at);
-  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value);
-  const wallAsUtc = Date.UTC(
-    get("year"),
-    get("month") - 1,
-    get("day"),
-    get("hour") % 24,
-    get("minute"),
-    get("second")
-  );
-  return wallAsUtc - at.getTime();
+export function postDate(post: Pick<Post, "timestamp">): Date | null {
+  return post.timestamp ? post.timestamp.toDate() : null;
 }
 
-export function postDate(post: Pick<Post, "timestamp" | "legacy">): Date | null {
-  if (!post.timestamp) return null;
-  const d = post.timestamp.toDate();
-  if (!post.legacy) return d;
-  // First guess assumes the offset at the stored instant; a second pass
-  // corrects guesses that land on the other side of a DST switch.
-  let real = d.getTime() - newYorkOffsetMs(d);
-  real = d.getTime() - newYorkOffsetMs(new Date(real));
-  return new Date(real);
+// The badges judge when the shot was taken (capturedAt — the camera opening),
+// not when the upload finished, so a bad connection at the daily moment
+// doesn't cost the glow. Bounded both ways: a stamp more than 10 minutes
+// before the upload is ignored (nobody banks a camera-open and posts an hour
+// later), and one more than 10 minutes *after* the upload is a broken device
+// clock — honoring it would caption posts with times that haven't happened yet.
+const CAPTURE_GRACE_MS = 10 * 60 * 1000;
+
+type BadgeFields = Pick<Post, "timestamp" | "capturedAt">;
+
+// The one instant a card is both judged and captioned by, so the badge and
+// the caption can never disagree. Capture time when a trustworthy stamp
+// exists — except when the upload itself landed on the daily moment and the
+// capture didn't (opened the camera a minute early, hit upload on the minute:
+// the upload is the moment that earned it, so it's the moment shown).
+export function badgeDate(post: BadgeFields): Date | null {
+  const d = postDate(post);
+  if (!d) return null;
+  const c = post.capturedAt?.toDate?.();
+  if (!c || Math.abs(d.getTime() - c.getTime()) > CAPTURE_GRACE_MS) return d;
+  return readsDailyMoment(d) && !readsDailyMoment(c) ? d : c;
+}
+
+// Was this posted right on the site's daily moment? Those posts get a glow.
+// Which minute counts is the host's choice and is read off the site's own
+// clock, so the halo doesn't move around with each viewer's time zone.
+export function isMomentPost(post: BadgeFields): boolean {
+  const d = badgeDate(post);
+  return !!d && readsDailyMoment(d);
+}
+
+// Every photo posted on the host's special date gets the anniversary
+// treatment, whatever time it landed.
+export function isSpecialDayPost(post: BadgeFields): boolean {
+  const d = badgeDate(post);
+  return !!d && isSpecialDate(d);
+}
+
+// Stamped by the camera button the instant the picker opens; consumed by the
+// next createPost. Cleared after each post so a stale timer from an abandoned
+// camera session can't leak onto a later, unrelated post.
+let cameraOpenedAtMs: number | null = null;
+
+export function markCameraOpened() {
+  cameraOpenedAtMs = Date.now();
 }
 
 export type Comment = {
@@ -164,30 +180,23 @@ export async function createPost(opts: {
     // Non-decodable in this browser (e.g. HEIC on desktop) — post without dims.
   }
 
-  const imagePath = `photos/${opts.uid}/${Date.now()}-${opts.file.name}`;
-  const task = uploadBytesResumable(ref(storage, imagePath), opts.file, {
-    contentType: opts.file.type,
-  });
-  await new Promise<void>((resolve, reject) => {
-    task.on(
-      "state_changed",
-      (snap) => opts.onProgress?.(snap.bytesTransferred / snap.totalBytes),
-      reject,
-      resolve
-    );
-  });
+  const imagePath = `photos/${opts.uid}/${safeFileName(opts.file.name)}`;
+  await uploadFile(imagePath, opts.file, opts.onProgress);
 
   // Variant failure must never block a post — the feed falls back to the
   // original whenever the display copy is missing.
   if (display && display.size < opts.file.size) {
     try {
-      await uploadBytes(ref(storage, displayVariantPath(imagePath)), display, {
-        contentType: "image/jpeg",
-      });
+      await uploadFile(displayVariantPath(imagePath), display);
     } catch {
       /* fall back to original in the feed */
     }
   }
+
+  // The capture stamp rides along only when it's sane — the server rejects
+  // wildly-off values, and a rejected stamp must never fail the whole post.
+  const capturedMs = cameraOpenedAtMs;
+  cameraOpenedAtMs = null;
 
   const docRef = await addDoc(collection(db, "photos"), {
     userUUID: opts.uid,
@@ -197,15 +206,24 @@ export async function createPost(opts: {
     timestamp: serverTimestamp(),
     likedBy: [],
     ...(dims ? { imageWidth: dims.width, imageHeight: dims.height } : {}),
+    ...(capturedMs && Date.now() - capturedMs < 60 * 60 * 1000
+      ? { capturedAt: Timestamp.fromMillis(capturedMs) }
+      : {}),
   });
+
+  // Stamp "last active" on the poster's own profile. The @mention picker
+  // ranks by it. Best-effort — a failure only affects picker order.
+  void updateDoc(doc(db, "users", opts.uid), { lastPostAt: serverTimestamp() }).catch(() => {});
+
+  invalidateFeedCache();
   // Callers pass this to the notification fan-out so pushes and the bell
   // feed can deep-link to /p/{id}.
   return docRef.id;
 }
 
-// Admin legacy cleanup: attach an Anonymous post to the member who really
-// posted it. Server-side only freshAdmin() may make this update, so it works
-// within 15 minutes of unlocking /admin. Deliberately no notification — the
+// Admin cleanup: attach an unattributed post to the member who really posted
+// it. The server only accepts this from an admin who unlocked /admin within
+// the last 15 minutes. Deliberately no notification — the
 // member already knows they posted it.
 export async function assignPost(postId: string, uid: string, username: string) {
   await updateDoc(doc(db, "photos", postId), { userUUID: uid, username });
@@ -213,7 +231,6 @@ export async function assignPost(postId: string, uid: string, username: string) 
   void addDoc(collection(db, "adminLog"), {
     action: "assign-post",
     detail: `${postId} → ${username} (${uid})`,
-    email: auth.currentUser?.email || "",
     at: serverTimestamp(),
   }).catch(() => {});
   invalidateFeedCache();
@@ -237,24 +254,64 @@ export async function toggleLike(postId: string, uid: string, currentlyLiked: bo
 
 export async function deletePost(postId: string) {
   await deleteDoc(doc(db, "photos", postId));
+  invalidateCommentPreview(postId);
   // Deleting from a profile or permalink must not leave the ghost in the
   // cached feed.
   invalidateFeedCache();
 }
 
+// Roughly how tall a PhotoCard will render at a given content width, used to
+// reserve space for cards that haven't been on screen yet (see useVirtualList).
+// The image is the whole story and posts store its dimensions, so this is
+// close to exact; the card's real height replaces it once it mounts.
+const CARD_CHROME = 104; // header row + action row + padding
+const CARD_CAPTION_LINE = 22;
+
+export function estimateCardHeight(post: Post, width: number, viewportHeight = 800): number {
+  const w = Math.max(1, width) - 20; // article px-2.5
+  const ratio =
+    post.imageWidth && post.imageHeight ? post.imageHeight / post.imageWidth : 1; // square placeholder
+  const image = Math.min(w * ratio, viewportHeight * 0.8); // max-h-[80vh]
+  // Captions cap at 70 chars, so one line on phones and rarely two.
+  const captionLines = post.caption?.trim() ? Math.ceil(post.caption.length / 38) : 0;
+  return Math.round(image + CARD_CHROME + captionLines * CARD_CAPTION_LINE);
+}
+
 export type CommentPreview = { count: number; latest: Comment[] };
 
+// Every mounted card asks for its own preview, and cards remount constantly —
+// navigating back to the feed, re-windowing on /browse, a comments bump. Each
+// miss is a count query plus a two-doc read, so hold the result for the
+// session and drop it the moment that post's comments actually change.
+const previews = new Map<string, Promise<CommentPreview>>();
+
+export function invalidateCommentPreview(postId: string) {
+  previews.delete(postId);
+}
+
+// Hard refresh (FEED tap / pull-to-refresh): every card refetches its
+// preview, same as a fresh PWA launch.
+export function invalidateAllCommentPreviews() {
+  previews.clear();
+}
+
 // Count + the two most recent comments, shown under each feed card.
-export async function fetchCommentPreview(postId: string): Promise<CommentPreview> {
+export function fetchCommentPreview(postId: string): Promise<CommentPreview> {
+  const cached = previews.get(postId);
+  if (cached) return cached;
+
   const col = collection(db, "photos", postId, "comments");
-  const [countSnap, latestSnap] = await Promise.all([
+  const pending = Promise.all([
     getCountFromServer(col),
     getDocs(query(col, orderBy("timestamp", "desc"), limit(2))),
-  ]);
-  return {
+  ]).then(([countSnap, latestSnap]) => ({
     count: countSnap.data().count,
     latest: latestSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Comment)).reverse(),
-  };
+  }));
+  // A failed fetch must not be remembered as the answer.
+  pending.catch(() => previews.delete(postId));
+  previews.set(postId, pending);
+  return pending;
 }
 
 // Who currently likes a post — read fresh from the doc (not the possibly-stale
@@ -278,19 +335,19 @@ export async function fetchComments(postId: string): Promise<Comment[]> {
 }
 
 export async function addComment(postId: string, uid: string, username: string, text: string) {
-  const comment = await addDoc(collection(db, "photos", postId, "comments"), {
+  await addDoc(collection(db, "photos", postId, "comments"), {
     userUUID: uid,
     username,
     text,
     timestamp: serverTimestamp(),
     likedBy: [],
   });
-  return comment.id;
+  invalidateCommentPreview(postId);
 }
 
 // Toggle the caller's like on a comment. Same self-only arrayUnion/arrayRemove
-// shape as toggleLike on a post, so the security rule can verify only the
-// caller's own uid entered or left likedBy.
+// shape as toggleLike on a post, so the server can verify only the caller's
+// own uid entered or left likedBy.
 export async function toggleCommentLike(
   postId: string,
   commentId: string,
@@ -304,9 +361,5 @@ export async function toggleCommentLike(
 
 export async function deleteComment(postId: string, commentId: string) {
   await deleteDoc(doc(db, "photos", postId, "comments", commentId));
-}
-
-export async function getUsername(email: string): Promise<string> {
-  const snap = await getDoc(doc(db, "users", email));
-  return snap.exists() ? snap.data().username || "Anonymous" : "Anonymous";
+  invalidateCommentPreview(postId);
 }

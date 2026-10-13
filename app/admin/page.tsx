@@ -3,21 +3,9 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import {
-  EmailAuthProvider,
-  getMultiFactorResolver,
-  multiFactor,
-  reauthenticateWithCredential,
-  sendEmailVerification,
-  TotpMultiFactorGenerator,
-  type MultiFactorError,
-  type MultiFactorResolver,
-  type TotpSecret,
-  type User,
-} from "firebase/auth";
-import { FirebaseError } from "firebase/app";
 import QRCode from "qrcode";
 import {
+  db,
   addDoc,
   collection,
   collectionGroup,
@@ -27,9 +15,12 @@ import {
   getDocs,
   serverTimestamp,
   setDoc,
-} from "firebase/firestore";
-import { auth, db } from "@/lib/firebase";
+} from "@/lib/store";
 import { useAuth } from "@/lib/auth-context";
+import { ApiError, apiGet, apiPost } from "@/lib/api";
+import { beginTotp, confirmTotp, reauthenticate, type User } from "@/lib/account";
+import { site as siteInfo } from "@/lib/site";
+import AccessPanel from "./AccessPanel";
 import TopNav from "@/components/TopNav";
 import {
   type Announcement,
@@ -40,14 +31,26 @@ import {
   type P,
   type S,
   type U,
+  AdminIcon,
   AreaChart,
   BarChart,
   Board,
+  Checkbox,
+  Empty,
+  Facts,
   Heatmap,
+  NavRail,
+  NavTabs,
+  Pagination,
+  Pill,
+  Row,
+  Rule,
+  SearchInput,
   Section,
+  Segmented,
   StackBar,
   Stat,
-  TabBar,
+  Table,
   Thumb,
   btn,
   btnDanger,
@@ -61,6 +64,7 @@ import {
   monthKey,
   monthLabel,
   pct,
+  selectCls,
   streaks,
 } from "./shared";
 
@@ -131,11 +135,14 @@ function downloadBlob(name: string, mime: string, content: string) {
 const csvCell = (v: string | number | null | undefined) =>
   `"${String(v ?? "").replace(/"/g, '""')}"`;
 
+// Ids for the optimistic audit-log rows we render before the write lands.
+let localLogSeq = 0;
+
 /* ------------------------- TOTP 2FA enrollment card ------------------------- */
 
-function TotpEnrollCard({ user, onEnrolled }: { user: User; onEnrolled: () => void }) {
-  const [step, setStep] = useState<"idle" | "verify-email" | "scan">("idle");
-  const [secret, setSecret] = useState<TotpSecret | null>(null);
+function TotpEnrollCard({ onEnrolled }: { onEnrolled: () => void }) {
+  const [step, setStep] = useState<"idle" | "scan">("idle");
+  const [secret, setSecret] = useState<string | null>(null);
   const [qr, setQr] = useState<string | null>(null);
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
@@ -145,36 +152,13 @@ function TotpEnrollCard({ user, onEnrolled }: { user: User; onEnrolled: () => vo
     setBusy(true);
     setMsg(null);
     try {
-      await user.reload();
-      if (!user.emailVerified) {
-        setStep("verify-email");
-        return;
-      }
-      const session = await multiFactor(user).getSession();
-      const s = await TotpMultiFactorGenerator.generateSecret(session);
-      setSecret(s);
-      setQr(await QRCode.toDataURL(s.generateQrCodeUrl(user.email!, "NoPostNow"), { margin: 1, width: 220 }));
+      // No password needed here: the console was unlocked with it moments ago.
+      const begun = await beginTotp();
+      setSecret(begun.secret);
+      setQr(await QRCode.toDataURL(begun.uri, { margin: 1, width: 220 }));
       setStep("scan");
     } catch (e) {
-      setMsg(
-        e instanceof FirebaseError && e.code === "auth/operation-not-allowed"
-          ? "TOTP isn't enabled on the Firebase project yet."
-          : e instanceof Error
-            ? e.message
-            : "Couldn't start setup."
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function sendVerify() {
-    setBusy(true);
-    try {
-      await sendEmailVerification(user);
-      setMsg(`Verification email sent to ${user.email}. Click the link, then hit “I've verified”.`);
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message : "Couldn't send the email.");
+      setMsg(e instanceof Error ? e.message : "Couldn't start setup.");
     } finally {
       setBusy(false);
     }
@@ -185,10 +169,7 @@ function TotpEnrollCard({ user, onEnrolled }: { user: User; onEnrolled: () => vo
     setBusy(true);
     setMsg(null);
     try {
-      await multiFactor(user).enroll(
-        TotpMultiFactorGenerator.assertionForEnrollment(secret, code.trim()),
-        "Authenticator app"
-      );
+      await confirmTotp(code.trim());
       onEnrolled();
     } catch {
       setMsg("Wrong code — check the app and try again.");
@@ -198,36 +179,28 @@ function TotpEnrollCard({ user, onEnrolled }: { user: User; onEnrolled: () => vo
   }
 
   return (
-    <div className="mx-4 mt-5 rounded-lg border-[0.5px] border-[#5c4a1a] bg-[#161206] p-4">
-      <p className="text-[11px] font-bold uppercase tracking-[1.5px] text-[#d4a017]">
-        Two-factor authentication is off
-      </p>
-      <p className="mt-1.5 text-xs leading-relaxed text-mut">
-        Add an authenticator app (Google Authenticator, 1Password, Apple Passwords…) so
-        logging in to this account always needs a 6-digit code.
-      </p>
-      {msg && <p className="mt-2.5 text-xs leading-relaxed text-[#d4a017]">{msg}</p>}
+    <div className="flex gap-3 rounded-xl border-[0.5px] border-warn/35 bg-warn/[0.05] p-4">
+      <span className="mt-0.5 shrink-0 text-warn">
+        <AdminIcon name="alert" className="h-4.5 w-4.5" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-[12.5px] font-bold text-warn">Two-factor authentication is off</p>
+        <p className="mt-1 max-w-prose text-[11.5px] leading-relaxed text-mut">
+          Add an authenticator app (Google Authenticator, 1Password, Apple Passwords…) so
+          logging in to this admin account always needs a 6-digit code. Recommended once
+          the site is reachable from the internet.
+        </p>
+        {msg && <p className="mt-2.5 text-[11.5px] leading-relaxed text-warn">{msg}</p>}
 
       {step === "idle" && (
-        <button onClick={start} disabled={busy} className={`mt-3 rounded border-[0.5px] border-edge px-3 py-1.5 text-[10px] font-bold uppercase tracking-[1px] text-white transition-colors hover:border-mut disabled:opacity-40`}>
+        <button onClick={start} disabled={busy} className={`mt-3 ${btn}`}>
           Set up 2FA
         </button>
       )}
 
-      {step === "verify-email" && (
-        <div className="mt-3 flex flex-wrap gap-2">
-          <button onClick={sendVerify} disabled={busy} className="rounded border-[0.5px] border-edge px-3 py-1.5 text-[10px] font-bold uppercase tracking-[1px] text-white transition-colors hover:border-mut disabled:opacity-40">
-            Send verification email
-          </button>
-          <button onClick={start} disabled={busy} className="rounded border-[0.5px] border-edge px-3 py-1.5 text-[10px] font-bold uppercase tracking-[1px] text-mut transition-colors hover:border-mut hover:text-white disabled:opacity-40">
-            I&apos;ve verified — continue
-          </button>
-        </div>
-      )}
-
       {step === "scan" && secret && (
         <div className="mt-3.5">
-          <p className="text-xs leading-relaxed text-mut">
+          <p className="text-[11.5px] leading-relaxed text-mut">
             1. Scan this with your authenticator app (or enter the key manually).
           </p>
           {qr && (
@@ -236,36 +209,35 @@ function TotpEnrollCard({ user, onEnrolled }: { user: User; onEnrolled: () => vo
               <img src={qr} alt="TOTP QR code" className="h-[180px] w-[180px]" />
             </div>
           )}
-          <p className="mt-2 break-all text-[10px] text-dim">
-            Manual key: <span className="font-mono text-mut">{secret.secretKey}</span>
+          <p className="mt-2 break-all text-[10.5px] text-dim">
+            Manual key: <span className="font-mono text-mut">{secret}</span>
           </p>
-          <p className="mt-3 text-xs leading-relaxed text-mut">2. Enter the 6-digit code it shows:</p>
-          <div className="mt-2 flex gap-2">
+          <p className="mt-3 text-[11.5px] leading-relaxed text-mut">
+            2. Enter the 6-digit code it shows:
+          </p>
+          <div className="mt-2 flex items-center gap-2">
             <input
               inputMode="numeric"
               maxLength={6}
               value={code}
               onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
               placeholder="123456"
-              className="w-32 rounded-lg border-[0.5px] border-edge bg-card px-3 py-2 text-center text-[16px] tracking-[4px] outline-none focus:border-mut"
+              className="w-32 rounded-lg border-[0.5px] border-edge bg-card px-3 py-1.5 text-center text-[16px] tracking-[4px] outline-none focus:border-mut"
             />
-            <button
-              onClick={finish}
-              disabled={busy || code.length !== 6}
-              className="rounded-lg bg-white px-4 text-xs font-extrabold text-black transition-opacity disabled:opacity-30"
-            >
+            <button onClick={finish} disabled={busy || code.length !== 6} className={btnPrimary}>
               Enable
             </button>
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }
 
 /* ------------------------------ security panel ------------------------------ */
 
-const SESSION_SECONDS = 900; // must match freshAdmin() in firestore.rules
+const SESSION_SECONDS = 900; // must match FRESH_ADMIN_MS in server/session.ts
 
 function SecurityPanel({
   user,
@@ -287,72 +259,174 @@ function SecurityPanel({
   const remaining = Math.max(0, SESSION_SECONDS - Math.floor((now - unlockedAt) / 1000));
   const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
   const ss = String(remaining % 60).padStart(2, "0");
-  const factors = multiFactor(user).enrolledFactors;
 
   return (
-    <Section title="Security">
-      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
-        <div className="rounded-lg border-[0.5px] border-field bg-card px-3.5 py-3">
-          <p
-            className={`text-xl font-extrabold tabular-nums tracking-[-0.5px] ${
-              remaining === 0 ? "text-[#e74c3c]" : remaining < 120 ? "text-[#d4a017]" : ""
-            }`}
+    <Section
+      title="Security"
+      desc="This session's standing with the server. Admin writes are rejected once the window closes."
+      right={
+        remaining === 0 ? (
+          <button
+            onClick={() => onLock("Admin session expired — re-enter your password.")}
+            className={btnPrimary}
           >
-            {remaining === 0 ? "Expired" : `${mm}:${ss}`}
-          </p>
-          <p className="mt-0.5 text-[10px] font-bold uppercase tracking-[1.2px] text-mut">
-            Action window
-          </p>
-          <p className="mt-0.5 text-[10px] text-dim">
-            {remaining === 0
-              ? "mutations now rejected server-side"
-              : "server rejects mutations after this"}
-          </p>
-        </div>
-        <Stat
-          label="2FA"
-          value={factors.length ? "On" : "Off"}
-          sub={
-            factors.length
-              ? factors
-                  .map((f) => `${f.displayName ?? f.factorId} · since ${fmtDate(new Date(f.enrollmentTime))}`)
-                  .join(", ")
-              : "TOTP becomes mandatory Jul 21 2026"
-          }
-        />
-        <Stat
-          label="Verified email"
-          value={user.emailVerified ? "Yes" : "No"}
-          sub={user.email ?? undefined}
-        />
-      </div>
-      <div className="mt-3 flex flex-wrap gap-2">
-        {remaining === 0 ? (
-          <button onClick={() => onLock("Admin session expired — re-enter your password.")} className={btn}>
             Re-unlock
           </button>
         ) : (
           <button onClick={() => onLock()} className={btn}>
             Lock now
           </button>
-        )}
+        )
+      }
+    >
+      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+        <Stat
+          label="Action window"
+          value={remaining === 0 ? "Expired" : `${mm}:${ss}`}
+          sub={
+            remaining === 0
+              ? "mutations now rejected server-side"
+              : "server rejects mutations after this"
+          }
+          tone={remaining === 0 ? "red" : remaining < 120 ? "gold" : "green"}
+        />
+        <Stat
+          label="2FA"
+          value={user.totpEnabled ? "On" : "Off"}
+          sub={user.totpEnabled ? "authenticator app" : "recommended for admins"}
+          tone={user.totpEnabled ? "green" : "gold"}
+        />
+        <Stat label="Signed in as" value="Admin" sub={user.email} />
       </div>
     </Section>
+  );
+}
+
+// The countdown as a header chip: the one number worth seeing from any tab,
+// and a one-click lock. Ticks on its own so the rest of the console doesn't
+// re-render every second.
+function SessionChip({
+  unlockedAt,
+  onLock,
+}: {
+  unlockedAt: number;
+  onLock: (reason?: string) => void;
+}) {
+  const [now, setNow] = useState(unlockedAt);
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const remaining = Math.max(0, SESSION_SECONDS - Math.floor((now - unlockedAt) / 1000));
+  const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
+  const ss = String(remaining % 60).padStart(2, "0");
+  const dot =
+    remaining === 0 ? "bg-bad" : remaining < 120 ? "bg-warn" : "bg-ok";
+
+  return (
+    <button
+      onClick={() =>
+        onLock(remaining === 0 ? "Admin session expired — re-enter your password." : undefined)
+      }
+      title={
+        remaining === 0
+          ? "Session expired — unlock again to make changes"
+          : "Time left to make changes before the server stops accepting them"
+      }
+      className="group inline-flex h-8 items-center gap-2 rounded-lg border-[0.5px] border-edge bg-card px-2.5 transition-colors hover:border-mut lg:w-full"
+    >
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
+      <span className="text-[11px] font-semibold tabular-nums text-body">
+        {remaining === 0 ? "Expired" : `${mm}:${ss}`}
+      </span>
+      <span className="ml-auto text-[10px] font-bold uppercase tracking-[1px] text-dim transition-colors group-hover:text-white">
+        {remaining === 0 ? "Unlock" : "Lock"}
+      </span>
+    </button>
+  );
+}
+
+// Exports live behind one menu so the header keeps a single action.
+function ExportMenu({
+  onJson,
+  onPosts,
+  onMembers,
+}: {
+  onJson: () => void;
+  onPosts: () => void;
+  onMembers: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  const item =
+    "flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] text-body transition-colors hover:bg-white/[0.06] hover:text-white";
+
+  return (
+    <div ref={ref} className="relative">
+      <button onClick={() => setOpen((o) => !o)} className={btn} aria-expanded={open}>
+        <AdminIcon name="download" className="h-3.5 w-3.5" />
+        Export
+        <AdminIcon
+          name="chevron"
+          className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-9 z-40 w-44 overflow-hidden rounded-lg border-[0.5px] border-edge bg-card py-1 shadow-[0_12px_30px_rgba(0,0,0,0.6)]">
+          <button
+            onClick={() => {
+              onJson();
+              setOpen(false);
+            }}
+            className={item}
+          >
+            Everything (JSON)
+          </button>
+          <button
+            onClick={() => {
+              onPosts();
+              setOpen(false);
+            }}
+            className={item}
+          >
+            Posts (CSV)
+          </button>
+          <button
+            onClick={() => {
+              onMembers();
+              setOpen(false);
+            }}
+            className={item}
+          >
+            Members (CSV)
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
 /* ----------------------------- broadcast composer ---------------------------- */
 
 function BroadcastComposer({
-  user,
   deviceCount,
   onSent,
 }: {
-  user: User;
   deviceCount: number;
   onSent: (message: string, result: string, test: boolean) => void;
 }) {
-  const [title, setTitle] = useState("NoPostNow");
+  const [title, setTitle] = useState(() => siteInfo().siteName);
   const [message, setMessage] = useState("");
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
@@ -370,14 +444,12 @@ function BroadcastComposer({
     setBusy(true);
     setResult(null);
     try {
-      const token = await user.getIdToken();
-      const res = await fetch("/api/broadcast", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ title, message: message.trim(), url: url.trim() || undefined, test }),
+      const json = await apiPost<{ sent: number; stale: number }>("/api/broadcast", {
+        title,
+        message: message.trim(),
+        url: url.trim() || undefined,
+        test,
       });
-      const json = (await res.json()) as { sent?: number; stale?: number; error?: string };
-      if (!res.ok) throw new Error(json.error || "Send failed.");
       const summary = `Sent to ${json.sent} device${json.sent === 1 ? "" : "s"}${
         json.stale ? ` · ${json.stale} stale removed` : ""
       }${test ? " (test — your devices only)" : ""}`;
@@ -392,29 +464,57 @@ function BroadcastComposer({
   }
 
   return (
-    <Section title="Broadcast push notification">
-      <div className="flex flex-col gap-2">
-        <input
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          maxLength={40}
-          placeholder="Title"
-          className={inputCls}
-        />
-        <textarea
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          maxLength={160}
-          rows={3}
-          placeholder="Message — lands on every subscribed lock screen…"
-          className={`${inputCls} resize-none`}
-        />
-        <input
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="Open path when tapped (optional, e.g. /profile — defaults to feed)"
-          className={inputCls}
-        />
+    <Section
+      title="Broadcast push notification"
+      desc={`Goes to every subscribed device — ${deviceCount} right now. Send a test to your own devices first.`}
+    >
+      <div className="flex flex-col gap-3">
+        <label className="flex flex-col gap-1.5">
+          <span className="text-[10px] font-bold uppercase tracking-[1.2px] text-mut">Title</span>
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            maxLength={40}
+            placeholder={siteInfo().siteName}
+            className={inputCls}
+          />
+        </label>
+        <label className="flex flex-col gap-1.5">
+          <span className="flex items-baseline justify-between text-[10px] font-bold uppercase tracking-[1.2px] text-mut">
+            Message
+            <span className="tabular-nums text-dim">{message.length}/160</span>
+          </span>
+          <textarea
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            maxLength={160}
+            rows={3}
+            placeholder="Lands on every subscribed lock screen…"
+            className={`${inputCls} resize-none`}
+          />
+        </label>
+        <label className="flex flex-col gap-1.5">
+          <span className="text-[10px] font-bold uppercase tracking-[1.2px] text-mut">
+            Open on tap
+          </span>
+          <input
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="Optional path, e.g. /profile — defaults to the feed"
+            className={inputCls}
+          />
+        </label>
+
+        {message.trim() && (
+          <div className="rounded-xl border-[0.5px] border-edge bg-card p-3.5">
+            <p className="mb-2 text-[9.5px] font-bold uppercase tracking-[1.5px] text-dim">
+              Lock-screen preview
+            </p>
+            <p className="text-[12.5px] font-bold">{title || siteInfo().siteName}</p>
+            <p className="mt-0.5 text-[12.5px] leading-relaxed text-body">{message.trim()}</p>
+          </div>
+        )}
+
         <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => send(false)}
@@ -426,9 +526,8 @@ function BroadcastComposer({
           <button onClick={() => send(true)} disabled={busy || !message.trim()} className={btn}>
             Test on my devices
           </button>
-          <span className="text-[10px] tabular-nums text-dim">{message.length}/160</span>
         </div>
-        {result && <p className="text-xs text-mut">{result}</p>}
+        {result && <p className="text-[11.5px] text-mut">{result}</p>}
       </div>
     </Section>
   );
@@ -464,30 +563,43 @@ function AnnouncementManager({
   }
 
   return (
-    <Section title="Feed announcement">
-      <p className="mb-3 text-[11px] leading-relaxed text-dim">
-        A pinned card at the top of the feed. Members can dismiss it; publishing again
-        brings it back for everyone.
-        {active && <span className="ml-1.5 font-bold text-[#2ecc71]">● Currently live</span>}
-      </p>
-      <div className="flex flex-col gap-2">
-        <textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          maxLength={200}
-          rows={2}
-          placeholder="Announcement text…"
-          className={`${inputCls} resize-none`}
-        />
-        <input
-          value={link}
-          onChange={(e) => setLink(e.target.value)}
-          placeholder="Link path (optional, e.g. /profile)"
-          className={inputCls}
-        />
+    <Section
+      title="Feed announcement"
+      desc="A pinned card at the top of the feed. Members can dismiss it; publishing again brings it back for everyone."
+      right={active ? <Pill tone="ok">● Live</Pill> : <Pill>Not published</Pill>}
+    >
+      <div className="flex flex-col gap-3">
+        <label className="flex flex-col gap-1.5">
+          <span className="flex items-baseline justify-between text-[10px] font-bold uppercase tracking-[1.2px] text-mut">
+            Text
+            <span className="tabular-nums text-dim">{text.length}/200</span>
+          </span>
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            maxLength={200}
+            rows={3}
+            placeholder="Announcement text…"
+            className={`${inputCls} resize-none`}
+          />
+        </label>
+        <label className="flex flex-col gap-1.5">
+          <span className="text-[10px] font-bold uppercase tracking-[1.2px] text-mut">Link</span>
+          <input
+            value={link}
+            onChange={(e) => setLink(e.target.value)}
+            placeholder="Optional path, e.g. /profile"
+            className={inputCls}
+          />
+        </label>
         {text.trim() && (
-          <div className="rounded-lg border-[0.5px] border-edge bg-card p-4">
-            <p className="mb-1 text-[10px] font-bold uppercase tracking-[1.5px] text-mut">NoPostNow</p>
+          <div className="rounded-xl border-[0.5px] border-edge bg-card p-4">
+            <p className="mb-2 text-[9.5px] font-bold uppercase tracking-[1.5px] text-dim">
+              Feed preview
+            </p>
+            <p className="mb-1 text-[10px] font-bold uppercase tracking-[1.5px] text-mut">
+              {siteInfo().siteName}
+            </p>
             <p className="text-[13px] leading-relaxed text-body">{text.trim()}</p>
             {link.trim() && (
               <span className="mt-1.5 inline-block text-[11px] font-bold uppercase tracking-[1px]">
@@ -496,7 +608,7 @@ function AnnouncementManager({
             )}
           </div>
         )}
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button onClick={() => save(true)} disabled={busy || !text.trim()} className={btnPrimary}>
             {active ? "Update" : "Publish"}
           </button>
@@ -506,7 +618,7 @@ function AnnouncementManager({
             </button>
           )}
         </div>
-        {msg && <p className="text-xs text-mut">{msg}</p>}
+        {msg && <p className="text-[11.5px] text-mut">{msg}</p>}
       </div>
     </Section>
   );
@@ -518,11 +630,13 @@ function MemberDetail({
   u,
   data,
   live,
+  nameOf,
   onDeletePost,
 }: {
   u: U;
   data: Data;
   live: P[];
+  nameOf: (uid: string | null) => string;
   onDeletePost: (p: P) => void;
 }) {
   const posts = live.filter((p) => p.username === u.username);
@@ -541,42 +655,74 @@ function MemberDetail({
     : null;
   const postDays = new Set(posts.filter((p) => p.timestamp).map((p) => dayKey(p.timestamp!)));
   const { longest } = streaks(postDays);
+  // Both directions of this member's blocks, keyed on the uid the rest of the
+  // app enforces against — a member with no uid can't appear on either side.
+  const blocking = u.uid ? (data.blocks.find((b) => b.uid === u.uid)?.blocked ?? []) : [];
+  const blockedBy = u.uid
+    ? data.blocks.filter((b) => b.blocked.includes(u.uid!)).map((b) => b.uid)
+    : [];
 
   return (
-    <div className="rounded-lg border-[0.5px] border-field bg-card p-3.5">
-      <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-[11px] sm:grid-cols-3">
-        {(
-          [
+    <div className="rounded-xl border-[0.5px] border-field bg-card p-4">
+      <div className="grid gap-x-8 sm:grid-cols-2 xl:grid-cols-3">
+        <Facts
+          rows={[
             ["Joined", fmtDate(u.joinedAt)],
             ["Last active", fmtDateTime(lastActive)],
             ["First post", fmtDate(posts.at(-1)?.timestamp ?? null)],
             ["Latest post", fmtDate(posts[0]?.timestamp ?? null)],
+          ]}
+        />
+        <Facts
+          rows={[
             ["Posts", posts.length],
             ["Comments", comments.length],
             ["Likes given", likesGiven],
             ["Likes received", likesRecv],
+          ]}
+        />
+        <Facts
+          rows={[
             ["Avg ♥ / post", posts.length ? (likesRecv / posts.length).toFixed(1) : "—"],
             ["Longest streak", longest ? `${longest} day${longest === 1 ? "" : "s"}` : "—"],
             ["Push devices", devices.length],
             ["Days active", new Set(activity.map((d) => dayKey(d))).size],
-          ] as [string, string | number][]
-        ).map(([k, v]) => (
-          <p key={k} className="flex justify-between gap-2 border-b-[0.5px] border-field pb-1">
-            <span className="text-dim">{k}</span>
-            <span className="font-bold tabular-nums">{v}</span>
-          </p>
-        ))}
+          ]}
+        />
       </div>
+      {(blocking.length > 0 || blockedBy.length > 0) && (
+        <>
+          <Rule label="Blocks" />
+          <div className="flex flex-col gap-1 text-[11.5px] leading-snug text-body">
+            {blocking.length > 0 && (
+              <p>
+                <span className="text-dim">Blocking</span> {blocking.map(nameOf).join(", ")}
+              </p>
+            )}
+            {blockedBy.length > 0 && (
+              <p>
+                <span className="text-dim">Blocked by</span> {blockedBy.map(nameOf).join(", ")}
+              </p>
+            )}
+          </div>
+        </>
+      )}
       {posts.length > 0 && (
         <>
-          <p className="mb-1.5 mt-3 text-[10px] font-bold uppercase tracking-[1.5px] text-mut">
-            Recent posts
-          </p>
+          <Rule label={`Recent posts (${Math.min(posts.length, 8)} of ${posts.length})`} />
           <div className="flex flex-wrap gap-2">
             {posts.slice(0, 8).map((p) => (
-              <div key={p.id} className="flex flex-col items-center gap-1">
-                {p.imagePath && <Thumb path={p.imagePath} />}
-                <button onClick={() => onDeletePost(p)} className="text-[9px] font-bold uppercase tracking-[1px] text-[#e74c3c]">
+              <div key={p.id} className="group relative">
+                {p.imagePath ? (
+                  <Thumb path={p.imagePath} size={56} />
+                ) : (
+                  <div className="h-14 w-14 rounded-lg bg-field" />
+                )}
+                <button
+                  onClick={() => onDeletePost(p)}
+                  aria-label="Delete this post"
+                  className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/70 text-[9px] font-bold uppercase tracking-[1px] text-bad opacity-0 transition-opacity hover:opacity-100 focus-visible:opacity-100"
+                >
                   Delete
                 </button>
               </div>
@@ -601,16 +747,16 @@ type TabId =
   | "system";
 
 export default function AdminPage() {
-  const { user, isAdmin, loading } = useAuth();
+  const { user, loading, refresh } = useAuth();
   const router = useRouter();
   const [unlocked, setUnlocked] = useState(false);
   const [unlockedAt, setUnlockedAt] = useState(0);
   const [password, setPassword] = useState("");
   const [gateError, setGateError] = useState<string | null>(null);
   const [gateBusy, setGateBusy] = useState(false);
-  const [mfaResolver, setMfaResolver] = useState<MultiFactorResolver | null>(null);
+  // True once the password was accepted but an authenticator code is owed.
+  const [needsCode, setNeedsCode] = useState(false);
   const [totpCode, setTotpCode] = useState("");
-  const [enrolledBump, setEnrolledBump] = useState(0);
   const [data, setData] = useState<Data | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -628,6 +774,13 @@ export default function AdminPage() {
 
   // members
   const [openMember, setOpenMember] = useState<string | null>(null);
+  const [mSearch, setMSearch] = useState("");
+  const [mSort, setMSort] = useState<
+    "name" | "posts" | "comments" | "likes" | "joined" | "active"
+  >("posts");
+
+  // moderation sub-view — posts, the trash, or the comment browser
+  const [modView, setModView] = useState<"posts" | "trash" | "comments">("posts");
 
   // approvals (claim queue) multi-select
   const [selectedClaims, setSelectedClaims] = useState<Set<string>>(new Set());
@@ -635,11 +788,11 @@ export default function AdminPage() {
   // active tab
   const [tab, setTab] = useState<TabId>("overview");
 
-  const logCounter = useRef(0);
-
   useEffect(() => {
     if (!loading && !user) router.replace("/login");
   }, [loading, user, router]);
+
+  const isAdmin = user?.isAdmin === true;
 
   function lock(reason?: string) {
     setUnlocked(false);
@@ -647,55 +800,30 @@ export default function AdminPage() {
     setGateError(reason ?? null);
   }
 
-  // Step-up: reauthenticate refreshes auth_time, which the freshAdmin() rule
-  // checks server-side. Browsing works on the old session; mutating doesn't.
+  // Step-up: re-entering the password (and authenticator code, when one is
+  // set up) opens a short window in which the server accepts admin changes.
+  // Browsing works on the ordinary session; changing things doesn't.
   async function unlock(e: React.FormEvent) {
     e.preventDefault();
-    if (!user?.email) return;
+    if (!user) return;
     setGateBusy(true);
     setGateError(null);
     try {
-      await reauthenticateWithCredential(
-        user,
-        EmailAuthProvider.credential(user.email, password)
-      );
-      await user.getIdToken(true);
+      await reauthenticate(password, needsCode ? totpCode.trim() : undefined);
       setPassword("");
+      setTotpCode("");
+      setNeedsCode(false);
       setUnlockedAt(Date.now());
       setUnlocked(true);
     } catch (e) {
-      // 2FA enrolled: password was right, the authenticator code is still owed.
-      if (e instanceof FirebaseError && e.code === "auth/multi-factor-auth-required") {
-        setMfaResolver(getMultiFactorResolver(auth, e as MultiFactorError));
-      } else {
+      const code = e instanceof ApiError ? e.code : "";
+      if (code === "mfa-required") setNeedsCode(true);
+      else if (code === "mfa-wrong") setGateError("Wrong code — check your authenticator app.");
+      else if (code === "too-many-requests") setGateError("Too many attempts — wait a few minutes.");
+      else {
+        setNeedsCode(false);
         setGateError("Wrong password.");
       }
-    } finally {
-      setGateBusy(false);
-    }
-  }
-
-  async function unlockTotp(e: React.FormEvent) {
-    e.preventDefault();
-    if (!mfaResolver || !user) return;
-    setGateBusy(true);
-    setGateError(null);
-    try {
-      const totpHint = mfaResolver.hints.find(
-        (h) => h.factorId === TotpMultiFactorGenerator.FACTOR_ID
-      );
-      if (!totpHint) throw new Error("No authenticator enrolled.");
-      await mfaResolver.resolveSignIn(
-        TotpMultiFactorGenerator.assertionForSignIn(totpHint.uid, totpCode.trim())
-      );
-      await user.getIdToken(true);
-      setMfaResolver(null);
-      setTotpCode("");
-      setPassword("");
-      setUnlockedAt(Date.now());
-      setUnlocked(true);
-    } catch {
-      setGateError("Wrong code — check your authenticator app.");
     } finally {
       setGateBusy(false);
     }
@@ -716,6 +844,8 @@ export default function AdminPage() {
           annSnap,
           fbSnap,
           claimsSnap,
+          blocksSnap,
+          accountList,
         ] = await Promise.all([
           getDocs(collection(db, "photos")),
           getDocs(collectionGroup(db, "comments")),
@@ -726,8 +856,12 @@ export default function AdminPage() {
           getDoc(doc(db, "config", "announcement")),
           getDocs(collection(db, "feedback")),
           getDocs(collection(db, "claims")),
+          getDocs(collection(db, "blocks")),
+          // Profiles hold no email address; only admins can ask for them.
+          apiGet<{ accounts: { uid: string; email: string }[] }>("/api/admin/accounts"),
         ]);
         if (cancelled) return;
+        const emailOf = new Map(accountList.accounts.map((a) => [a.uid, a.email]));
         setData({
           photos: photosSnap.docs.map((d) => {
             const x = d.data();
@@ -760,10 +894,10 @@ export default function AdminPage() {
           users: usersSnap.docs.map((d) => {
             const x = d.data();
             return {
-              email: d.id,
+              email: emailOf.get(d.id) ?? "",
               username: x.username ?? d.id,
               avatarPath: x.avatarPath ?? null,
-              uid: x.uid ?? null,
+              uid: d.id,
               joinedAt: x.joinedAt?.toDate?.() ?? x.createdAt?.toDate?.() ?? null,
               muted: x.muted === true,
             };
@@ -780,6 +914,18 @@ export default function AdminPage() {
           legacy: legacySnap.docs
             .map((d) => d.data().firstJoined?.toDate?.() ?? null)
             .filter((d): d is Date => d !== null),
+          // Same snapshot, keeping the doc id (= uid) and email this time.
+          identities: legacySnap.docs.map((d) => ({
+            uid: d.id,
+            email: typeof d.data().email === "string" ? d.data().email : null,
+            firstJoined: d.data().firstJoined?.toDate?.() ?? null,
+          })),
+          blocks: blocksSnap.docs.map((d) => ({
+            uid: d.id,
+            blocked: (Array.isArray(d.data().blocked) ? d.data().blocked : []).filter(
+              (x: unknown): x is string => typeof x === "string" && x.length > 0
+            ),
+          })),
           log: logSnap.docs
             .map((d) => {
               const x = d.data();
@@ -798,7 +944,7 @@ export default function AdminPage() {
                 id: d.id,
                 uid: x.uid ?? null,
                 username: x.username ?? "?",
-                email: x.email ?? "",
+                email: emailOf.get(x.uid) ?? "",
                 text: x.text ?? "",
                 at: x.at?.toDate?.() ?? null,
               };
@@ -820,7 +966,7 @@ export default function AdminPage() {
                 postId: x.postId ?? "",
                 uid: x.uid ?? null,
                 username: x.username ?? "?",
-                email: x.email ?? "",
+                email: emailOf.get(x.uid) ?? "",
                 at: x.at?.toDate?.() ?? null,
               };
             })
@@ -854,6 +1000,123 @@ export default function AdminPage() {
     for (const u of data.users) if (u.uid) uidName.set(u.uid, u.username);
     const nameOf = (uid: string | null) =>
       (uid && uidName.get(uid)) || (uid ? `${uid.slice(0, 8)}…` : "Anonymous");
+
+    // Members whose users doc never got a uid — they only self-heal on
+    // sign-in, so anyone who hasn't been back since profiles shipped is still
+    // missing one. Without it they can't be @mentioned, DM'd, or reached by
+    // the bell feed, and the app has to fall back to guessing from posts.
+    //
+    // Two recovery sources, most reliable first: unique_users (an actual
+    // uid -> email record) and their posts (username -> userUUID, which a
+    // rename could have made stale, so it's the fallback).
+    const emailToUid = new Map<string, string>();
+    for (const id of data.identities) {
+      if (id.email) emailToUid.set(id.email.toLowerCase(), id.uid);
+    }
+    const nameToUid = new Map<string, string>();
+    for (const p of data.photos) {
+      if (p.username && p.userUUID && !nameToUid.has(p.username)) {
+        nameToUid.set(p.username, p.userUUID);
+      }
+    }
+    const missingUids = data.users
+      .filter((u) => !u.uid)
+      .map((u) => {
+        const fromIdentity = emailToUid.get(u.email.toLowerCase()) ?? null;
+        const fromPosts = nameToUid.get(u.username) ?? null;
+        return {
+          user: u,
+          uid: fromIdentity ?? fromPosts,
+          source: fromIdentity ? "unique_users" : fromPosts ? "their posts" : null,
+          // Worth eyeballing before writing: the two sources disagree.
+          conflict: Boolean(fromIdentity && fromPosts && fromIdentity !== fromPosts),
+        };
+      });
+    const fixableUids = missingUids.filter((r) => r.uid);
+
+    /* --------------------------------- blocks --------------------------------- */
+
+    // Blocking is enforced in two places that never talk to each other: the
+    // push fan-out on the server (/api/notify-post) and every filtered list on
+    // the client. Both match on the uids in blocks/{uid}.blocked and nothing
+    // else — so a block naming a uid its target doesn't actually act under is
+    // a block that silently does nothing, on both sides at once. That is what
+    // this view exists to catch; the rows below carry each side's real uid.
+    const postsByUid = new Map<string, { posts: number; last: Date | null }>();
+    for (const p of live) {
+      if (!p.userUUID) continue;
+      const cur = postsByUid.get(p.userUUID);
+      // `live` is newest-first, so the first sighting is their latest post.
+      if (cur) cur.posts += 1;
+      else postsByUid.set(p.userUUID, { posts: 1, last: p.timestamp });
+    }
+    const devicesByUid = new Map<string, number>();
+    for (const s of data.subs) {
+      if (s.uid) devicesByUid.set(s.uid, (devicesByUid.get(s.uid) ?? 0) + 1);
+    }
+    const emailOfUid = new Map<string, string>();
+    for (const id of data.identities) if (id.email) emailOfUid.set(id.uid, id.email);
+    for (const u of data.users) if (u.uid) emailOfUid.set(u.uid, u.email);
+
+    // Display name -> every uid ever seen carrying it. More than one means the
+    // same person acts under two logins (a second signup, a hand-backfilled
+    // uid), which is exactly how a block ends up aimed at the wrong half.
+    const uidsByName = new Map<string, Set<string>>();
+    const seenName = (name: string | null, uid: string | null) => {
+      if (!name || !uid) return;
+      const set = uidsByName.get(name) ?? new Set<string>();
+      set.add(uid);
+      uidsByName.set(name, set);
+    };
+    for (const p of live) seenName(p.username, p.userUUID);
+    for (const u of data.users) seenName(u.username, u.uid);
+
+    const uidFacts = (uid: string) => {
+      const activity = postsByUid.get(uid);
+      return {
+        uid,
+        name: uidName.get(uid) ?? null,
+        email: emailOfUid.get(uid) ?? null,
+        posts: activity?.posts ?? 0,
+        lastPost: activity?.last ?? null,
+        devices: devicesByUid.get(uid) ?? 0,
+        // Anything the database can tie to a person: a post, a users doc, or
+        // a login record.
+        known: uidName.has(uid) || emailOfUid.has(uid),
+      };
+    };
+
+    const edgeKey = (from: string, to: string) => `${from}>${to}`;
+    const rawEdges = data.blocks.flatMap((b) => b.blocked.map((to) => ({ from: b.uid, to })));
+    const edgeSet = new Set(rawEdges.map((e) => edgeKey(e.from, e.to)));
+    const blockEdges = rawEdges
+      .map((e) => {
+        const from = uidFacts(e.from);
+        const to = uidFacts(e.to);
+        // Other uids carrying the target's name, ranked by who actually posts —
+        // if the blocked uid isn't the one posting, the block misses.
+        const twins = [...(uidsByName.get(to.name ?? "") ?? [])]
+          .filter((u) => u !== to.uid)
+          .sort((a, b) => (postsByUid.get(b)?.posts ?? 0) - (postsByUid.get(a)?.posts ?? 0));
+        const liveTwin = twins.find((u) => (postsByUid.get(u)?.posts ?? 0) > 0) ?? null;
+        const problem = !to.known
+          ? "This uid matches no post, member or login — nothing can ever match it."
+          : to.posts === 0 && liveTwin
+            ? `${to.name} posts under a different uid, so this block never fires on their posts.`
+            : null;
+        return { ...e, from, to, mutual: edgeSet.has(edgeKey(e.to, e.from)), problem, liveTwin };
+      })
+      // Anything broken first — that's the only reason to open this list in a
+      // hurry — then alphabetical by who blocked whom.
+      .sort(
+        (a, b) =>
+          Number(Boolean(b.problem)) - Number(Boolean(a.problem)) ||
+          (a.from.name ?? a.from.uid).localeCompare(b.from.name ?? b.from.uid) ||
+          (a.to.name ?? a.to.uid).localeCompare(b.to.name ?? b.to.uid)
+      );
+    const brokenBlocks = blockEdges.filter((e) => e.problem);
+    // Counted once per pair, not once per direction.
+    const mutualBlocks = blockEdges.filter((e) => e.mutual && e.from.uid < e.to.uid).length;
 
     const commentsByPost = new Map<string, number>();
     for (const c of data.comments)
@@ -999,6 +1262,11 @@ export default function AdminPage() {
       dead,
       trashed,
       nameOf,
+      missingUids,
+      fixableUids,
+      blockEdges,
+      brokenBlocks,
+      mutualBlocks,
       commentsByPost,
       totalLikes,
       captioned,
@@ -1053,11 +1321,10 @@ export default function AdminPage() {
     void addDoc(collection(db, "adminLog"), {
       action,
       detail: detail.slice(0, 300),
-      email: user?.email || "",
       at: serverTimestamp(),
     }).catch(() => {});
     const entry: LogEntry = {
-      id: `local-${logCounter.current++}`,
+      id: `local-${localLogSeq++}`,
       action,
       detail: detail.slice(0, 300),
       at: new Date(),
@@ -1166,18 +1433,7 @@ export default function AdminPage() {
       return;
     }
     try {
-      await Promise.all([
-        setDoc(doc(db, "users", u.email), { username: next }, { merge: true }),
-        ...(u.uid
-          ? [
-              setDoc(
-                doc(db, "publicProfiles", u.uid),
-                { uid: u.uid, username: next },
-                { merge: true }
-              ),
-            ]
-          : []),
-      ]);
+      await setDoc(doc(db, "users", u.uid!), { username: next }, { merge: true });
       // Restamp their old posts and comments (matched by uid when the doc
       // has one, else by the old username — pre-self-heal accounts).
       const myPost = (p: P) => (u.uid ? p.userUUID === u.uid : p.username === u.username);
@@ -1246,7 +1502,7 @@ export default function AdminPage() {
     )
       return;
     try {
-      await setDoc(doc(db, "users", u.email), { muted }, { merge: true });
+      await setDoc(doc(db, "users", u.uid!), { muted }, { merge: true });
       setData(
         (d) =>
           d && { ...d, users: d.users.map((x) => (x.email === u.email ? { ...x, muted } : x)) }
@@ -1308,6 +1564,36 @@ export default function AdminPage() {
       const ids = new Set(claims.map((c) => c.id));
       setData((d) => d && { ...d, claims: d.claims.filter((c) => !ids.has(c.id)) });
       for (const c of claims) log("decline-claim", `${c.username} (${c.email}) ✗ ${c.postId}`);
+    } catch (e) {
+      handleActionError(e);
+    }
+  }
+
+  // Write the recovered uid onto each users doc that's missing one. Only the
+  // admin can write another member's doc (freshAdmin), which is why this lives
+  // here rather than running automatically in the app.
+  async function backfillUids() {
+    if (!m || !m.fixableUids.length) return;
+    const lines = m.fixableUids
+      .map((r) => `  ${r.user.username} (${r.user.email}) → ${r.uid} [${r.source}]`)
+      .join("\n");
+    if (!confirm(`Write uid onto ${m.fixableUids.length} user doc(s)?\n\n${lines}`)) return;
+    try {
+      let done = 0;
+      for (const r of m.fixableUids) {
+        await setDoc(doc(db, "users", r.user.uid ?? r.uid!), { uid: r.uid }, { merge: true });
+        log("backfill-uid", `${r.user.username} (${r.user.email}) → ${r.uid} [${r.source}]`);
+        done++;
+      }
+      const fixed = new Map(m.fixableUids.map((r) => [r.user.email, r.uid!]));
+      setData(
+        (d) =>
+          d && {
+            ...d,
+            users: d.users.map((u) => (fixed.has(u.email) ? { ...u, uid: fixed.get(u.email)! } : u)),
+          }
+      );
+      alert(`Backfilled ${done} uid${done === 1 ? "" : "s"}.`);
     } catch (e) {
       handleActionError(e);
     }
@@ -1430,7 +1716,7 @@ export default function AdminPage() {
 
   if (loading || !user) {
     return (
-      <div className="fixed inset-0 flex items-center justify-center text-sm font-semibold uppercase tracking-[2px] text-mut">
+      <div className="fixed inset-0 flex items-center justify-center text-[11px] font-bold uppercase tracking-[2px] text-mut">
         Loading
       </div>
     );
@@ -1445,74 +1731,63 @@ export default function AdminPage() {
     );
   }
 
-  if (!unlocked && mfaResolver) {
-    return (
-      <main className="flex min-h-dvh items-center justify-center px-4">
-        <form onSubmit={unlockTotp} className="w-full max-w-[340px]">
-          <h1 className="text-center text-lg font-extrabold">Admin</h1>
-          <p className="mb-6 mt-1 text-center text-xs leading-relaxed text-mut">
-            Enter the 6-digit code from your authenticator app.
-          </p>
-          {gateError && (
-            <p className="mb-3 rounded-lg border-[0.5px] border-[#5c1a1a] bg-[#1a0a0a] px-3.5 py-3 text-[13px] text-[#e74c3c]">
-              {gateError}
-            </p>
-          )}
-          <input
-            type="text"
-            autoFocus
-            required
-            inputMode="numeric"
-            autoComplete="one-time-code"
-            maxLength={6}
-            value={totpCode}
-            onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, ""))}
-            placeholder="123456"
-            className="w-full rounded-lg border-[0.5px] border-edge bg-card px-3.5 py-3 text-center text-xl tracking-[8px] outline-none transition-colors placeholder:text-[#2e2e2e] focus:border-mut"
-          />
-          <button
-            type="submit"
-            disabled={gateBusy || totpCode.length !== 6}
-            className="mt-3 w-full rounded-lg bg-white p-3 text-sm font-extrabold text-black transition-opacity disabled:opacity-30"
-          >
-            Verify
-          </button>
-        </form>
-      </main>
-    );
-  }
-
   if (!unlocked) {
+    const onTotp = needsCode;
     return (
       <main className="flex min-h-dvh items-center justify-center px-4">
-        <form onSubmit={unlock} className="w-full max-w-[340px]">
-          <h1 className="text-center text-lg font-extrabold">Admin</h1>
-          <p className="mb-6 mt-1 text-center text-xs leading-relaxed text-mut">
-            Re-enter your password. Admin actions are only valid for 15 minutes after this
-            check — enforced server-side.
+        <form
+          onSubmit={unlock}
+          className="w-full max-w-[360px] rounded-2xl border-[0.5px] border-field bg-card/50 p-6"
+        >
+          <div className="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-full border-[0.5px] border-edge bg-card text-mut">
+            <AdminIcon name="lock" className="h-5 w-5" />
+          </div>
+          <h1 className="text-center text-[15px] font-extrabold tracking-[-0.2px]">
+            Admin console
+          </h1>
+          <p className="mb-5 mt-1.5 text-center text-[11.5px] leading-relaxed text-mut">
+            {onTotp
+              ? "Enter the 6-digit code from your authenticator app."
+              : "Re-enter your password. Admin actions stay valid for 15 minutes after this check — enforced server-side."}
           </p>
           {gateError && (
-            <p className="mb-3 rounded-lg border-[0.5px] border-[#5c1a1a] bg-[#1a0a0a] px-3.5 py-3 text-[13px] text-[#e74c3c]">
+            <p className="mb-3 rounded-lg border-[0.5px] border-bad/40 bg-bad/[0.06] px-3.5 py-2.5 text-[12px] leading-relaxed text-bad">
               {gateError}
             </p>
           )}
-          <input
-            type="password"
-            autoFocus
-            required
-            autoComplete="current-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="Password"
-            className="w-full rounded-lg border-[0.5px] border-edge bg-card px-3.5 py-3 text-[16px] outline-none transition-colors placeholder:text-[#2e2e2e] focus:border-mut"
-          />
+          {onTotp ? (
+            <input
+              type="text"
+              autoFocus
+              required
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              value={totpCode}
+              onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, ""))}
+              placeholder="123456"
+              className="w-full rounded-lg border-[0.5px] border-edge bg-card px-3.5 py-3 text-center text-xl tracking-[8px] outline-none transition-colors placeholder:text-[#2e2e2e] focus:border-mut"
+            />
+          ) : (
+            <input
+              type="password"
+              autoFocus
+              required
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Password"
+              className="w-full rounded-lg border-[0.5px] border-edge bg-card px-3.5 py-3 text-[16px] outline-none transition-colors placeholder:text-[#2e2e2e] focus:border-mut"
+            />
+          )}
           <button
             type="submit"
-            disabled={gateBusy || !password}
-            className="mt-3 w-full rounded-lg bg-white p-3 text-sm font-extrabold text-black transition-opacity disabled:opacity-30"
+            disabled={gateBusy || (onTotp ? totpCode.length !== 6 : !password)}
+            className="mt-3 w-full rounded-lg bg-white p-3 text-[13px] font-extrabold text-black transition-opacity hover:opacity-90 disabled:opacity-30"
           >
-            Unlock
+            {onTotp ? "Verify" : "Unlock"}
           </button>
+          <p className="mt-4 truncate text-center text-[10px] text-dim">{user.email}</p>
         </form>
       </main>
     );
@@ -1520,7 +1795,7 @@ export default function AdminPage() {
 
   if (loadError) {
     return (
-      <div className="fixed inset-0 flex items-center justify-center px-6 text-center text-sm text-[#e74c3c]">
+      <div className="fixed inset-0 flex items-center justify-center px-6 text-center text-sm text-bad">
         {loadError}
       </div>
     );
@@ -1528,11 +1803,13 @@ export default function AdminPage() {
 
   if (!data || !m) {
     return (
-      <div className="fixed inset-0 flex items-center justify-center text-sm font-semibold uppercase tracking-[2px] text-mut">
+      <div className="fixed inset-0 flex items-center justify-center text-[11px] font-bold uppercase tracking-[2px] text-mut">
         Crunching numbers…
       </div>
     );
   }
+
+  /* ------------------------------ derived views ------------------------------ */
 
   const filteredPosts = m.live.filter((p) => {
     const q = search.trim().toLowerCase();
@@ -1556,11 +1833,34 @@ export default function AdminPage() {
     .filter((c) => {
       const q = cSearch.trim().toLowerCase();
       if (!q) return true;
-      return (
-        (c.username || "").toLowerCase().includes(q) || c.text.toLowerCase().includes(q)
-      );
+      return (c.username || "").toLowerCase().includes(q) || c.text.toLowerCase().includes(q);
     });
   const pageComments = filteredComments.slice(cPage * C_PER_PAGE, (cPage + 1) * C_PER_PAGE);
+
+  // One pass per member, then filter + sort — the table header drives both.
+  const memberRows = data.users
+    .map((u) => {
+      const posts = m.live.filter((p) => p.username === u.username);
+      return {
+        u,
+        posts: posts.length,
+        comments: data.comments.filter((c) => c.username === u.username).length,
+        likes: posts.reduce((n, p) => n + p.likedBy.length, 0),
+        last: m.lastActive.get(u.username) ?? null,
+      };
+    })
+    .filter(({ u }) => {
+      const q = mSearch.trim().toLowerCase();
+      return !q || u.username.toLowerCase().includes(q) || u.email.toLowerCase().includes(q);
+    })
+    .sort((a, b) => {
+      if (mSort === "name") return a.u.username.localeCompare(b.u.username);
+      if (mSort === "comments") return b.comments - a.comments;
+      if (mSort === "likes") return b.likes - a.likes;
+      if (mSort === "joined") return (b.u.joinedAt?.getTime() ?? 0) - (a.u.joinedAt?.getTime() ?? 0);
+      if (mSort === "active") return (b.last?.getTime() ?? 0) - (a.last?.getTime() ?? 0);
+      return b.posts - a.posts;
+    });
 
   const subsByUid = new Map<string, S[]>();
   for (const s of data.subs) {
@@ -1575,7 +1875,9 @@ export default function AdminPage() {
     : "—";
 
   const healthIssues = m.dead.length + m.orphanComments.length;
-  const TABS: { id: TabId; label: string; badge?: number }[] = [
+  const mutedCount = data.users.filter((u) => u.muted).length;
+
+  const NAV: { id: TabId; label: string; badge?: number }[] = [
     { id: "overview", label: "Overview" },
     { id: "approvals", label: "Approvals", badge: data.claims.length || undefined },
     { id: "analytics", label: "Analytics" },
@@ -1586,111 +1888,362 @@ export default function AdminPage() {
     { id: "system", label: "System", badge: healthIssues || undefined },
   ];
 
+  // Anything sitting in a queue gets surfaced on Overview rather than waiting
+  // to be found in a tab.
+  const attention: { id: TabId; label: string; n: number; tone: "warn" | "bad" | "white" }[] = [];
+  if (data.claims.length)
+    attention.push({
+      id: "approvals",
+      label: `post claim${data.claims.length === 1 ? "" : "s"} awaiting review`,
+      n: data.claims.length,
+      tone: "warn",
+    });
+  if (data.feedback.length)
+    attention.push({
+      id: "members",
+      label: `member note${data.feedback.length === 1 ? "" : "s"} to read`,
+      n: data.feedback.length,
+      tone: "white",
+    });
+  if (healthIssues)
+    attention.push({
+      id: "system",
+      label: "data health issue" + (healthIssues === 1 ? "" : "s") + " to sweep",
+      n: healthIssues,
+      tone: "bad",
+    });
+  if (mutedCount)
+    attention.push({
+      id: "members",
+      label: `member${mutedCount === 1 ? "" : "s"} currently muted`,
+      n: mutedCount,
+      tone: "warn",
+    });
+  // A block that can't match anyone is worse than no block: the person who set
+  // it believes they're invisible to someone who still sees everything.
+  if (m.brokenBlocks.length)
+    attention.push({
+      id: "members",
+      label: `block${m.brokenBlocks.length === 1 ? "" : "s"} that can't match anyone`,
+      n: m.brokenBlocks.length,
+      tone: "bad",
+    });
+
+  const memberActions = (u: U, open: boolean) => (
+    <>
+      <button onClick={() => setOpenMember(open ? null : u.email)} className={btn}>
+        {open ? "Close" : "Details"}
+      </button>
+      <button onClick={() => adminRename(u)} className={btn}>
+        Rename
+      </button>
+      <button onClick={() => adminSetMuted(u, !u.muted)} className={u.muted ? btn : btnDanger}>
+        {u.muted ? "Unmute" : "Mute"}
+      </button>
+    </>
+  );
+
+  const memberName = (u: U) => (
+    <span className="flex items-center gap-1.5">
+      {u.uid ? (
+        <Link href={`/u/${u.uid}`} target="_blank" className="truncate font-semibold hover:underline">
+          {u.username}
+        </Link>
+      ) : (
+        <span className="truncate font-semibold">{u.username}</span>
+      )}
+      {u.muted && <Pill tone="bad">Muted</Pill>}
+      {!u.uid && <Pill tone="warn">No uid</Pill>}
+    </span>
+  );
+
+  // A raw uid, readable at a glance and copyable in full from the tooltip —
+  // the whole point of the blocks view is comparing these against each other.
+  const uidChip = (uid: string) => (
+    <code
+      title={uid}
+      className="rounded border-[0.5px] border-edge bg-white/[0.04] px-1 py-0.5 font-mono text-[10px] text-mut"
+    >
+      {uid.slice(0, 12)}…
+    </code>
+  );
+
+  const memberAvatar = (u: U) => (
+    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-[0.5px] border-edge bg-field text-[11px] font-bold uppercase text-mut">
+      {u.username.slice(0, 1)}
+    </span>
+  );
+
+  const postRowActions = (p: P) => (
+    <>
+      <span className="hidden sm:block">
+        <Link href={`/p/${p.id}`} target="_blank" className={btn}>
+          Open
+        </Link>
+      </span>
+      <button onClick={() => adminDeletePost(p)} className={btnDanger}>
+        Delete
+      </button>
+    </>
+  );
+
   return (
     <>
       <TopNav />
-      <main className="mx-auto w-full max-w-2xl pb-24 pt-[calc(52px+env(safe-area-inset-top))]">
-        {enrolledBump >= 0 && multiFactor(user).enrolledFactors.length === 0 && (
-          <TotpEnrollCard
-            user={user}
-            onEnrolled={() => {
-              setEnrolledBump((b) => b + 1);
-              lock("2FA enabled. Unlock again — from now on you'll need your password and a code.");
-            }}
-          />
-        )}
+      <div className="mx-auto flex w-full max-w-[1440px] gap-6 pt-[calc(52px+env(safe-area-inset-top))] lg:px-6">
+        <NavRail
+          items={NAV}
+          active={tab}
+          onChange={setTab}
+          footer={<SessionChip unlockedAt={unlockedAt} onLock={lock} />}
+        />
 
-        <div className="flex flex-wrap items-end justify-between gap-3 px-4 pb-3 pt-6">
-          <div>
-            <h1 className="text-2xl font-extrabold tracking-[-0.4px]">Admin</h1>
-            <p className="mt-0.5 text-[11px] text-mut">
-              {m.live.length} posts · {data.users.length} members · {data.subs.length} devices
-            </p>
-          </div>
-          <div className="flex gap-2">
-            <button onClick={exportJson} className={btn}>
-              JSON
-            </button>
-            <button onClick={exportPostsCsv} className={btn}>
-              Posts CSV
-            </button>
-            <button onClick={exportMembersCsv} className={btn}>
-              Members CSV
-            </button>
-          </div>
-        </div>
+        <main className="min-w-0 flex-1 pb-24">
+          {/* Page header: who/what, the live counts, and the exports. */}
+          <header className="flex flex-wrap items-end justify-between gap-x-4 gap-y-3 px-4 pb-4 pt-5 lg:px-0 lg:pt-6">
+            <div className="min-w-0">
+              <h1 className="text-[22px] font-extrabold tracking-[-0.6px] sm:text-2xl">
+                {NAV.find((t) => t.id === tab)?.label ?? "Admin"}
+              </h1>
+              <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px] text-mut">
+                <span className="tabular-nums">{m.live.length.toLocaleString()} posts</span>
+                <span className="text-dim">·</span>
+                <span className="tabular-nums">{data.users.length} members</span>
+                <span className="text-dim">·</span>
+                <span className="tabular-nums">{data.subs.length} devices</span>
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="lg:hidden">
+                <SessionChip unlockedAt={unlockedAt} onLock={lock} />
+              </span>
+              <ExportMenu
+                onJson={exportJson}
+                onPosts={exportPostsCsv}
+                onMembers={exportMembersCsv}
+              />
+            </div>
+          </header>
 
-        <TabBar tabs={TABS} active={tab} onChange={setTab} />
+          <NavTabs items={NAV} active={tab} onChange={setTab} />
 
-        <div className="flex flex-col gap-3 px-3 py-4">
-          {tab === "overview" && (
-            <Section title="Growth — cumulative posts" desc="Every post ever shared, added up month by month.">
-              <AreaChart data={m.postsGrowth} tone="255,59,92" />
-            </Section>
-          )}
+          {(tab === "overview" || tab === "system") &&
+            !user.totpEnabled && (
+            <div className="px-3 pt-4 sm:px-4 lg:px-0">
+              <TotpEnrollCard
+                onEnrolled={() => {
+                  void refresh();
+                  lock(
+                    "2FA enabled. Unlock again — from now on you'll need your password and a code."
+                  );
+                }}
+              />
+            </div>
+            )}
 
-          {tab === "approvals" && (
-            <Section
-              title={`Post claims (${data.claims.length})`}
-              desc="Members asking to be credited as the owner of an Anonymous post. Approving reassigns the post to them; declining leaves it Anonymous."
-            >
-              {data.claims.length === 0 ? (
-                <p className="text-xs text-dim">
-                  No pending claims. Members can claim Anonymous posts from the feed.
-                </p>
-              ) : (
-                <>
-                  <div className="mb-3 flex flex-wrap items-center gap-2">
-                    <button
-                      onClick={() =>
-                        setSelectedClaims((s) =>
-                          data.claims.every((c) => s.has(c.id))
-                            ? new Set()
-                            : new Set(data.claims.map((c) => c.id))
-                        )
+          <div className="flex flex-col gap-4 px-3 py-4 sm:px-4 lg:px-0 lg:py-6">
+            {/* -------------------------------- overview ------------------------------- */}
+            {tab === "overview" && (
+              <>
+                {attention.length > 0 && (
+                  <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
+                    {attention.map((a) => (
+                      <button
+                        key={a.label}
+                        onClick={() => setTab(a.id)}
+                        className="flex items-center gap-3 rounded-xl border-[0.5px] border-field bg-card px-3.5 py-3 text-left transition-colors hover:border-edge"
+                      >
+                        <span
+                          className={`text-[22px] font-extrabold leading-none tabular-nums tracking-[-0.8px] ${
+                            a.tone === "bad"
+                              ? "text-bad"
+                              : a.tone === "warn"
+                                ? "text-warn"
+                                : "text-white"
+                          }`}
+                        >
+                          {a.n}
+                        </span>
+                        <span className="min-w-0 flex-1 text-[11.5px] leading-snug text-mut">
+                          {a.label}
+                        </span>
+                        <AdminIcon name="chevron" className="h-4 w-4 -rotate-90 text-dim" />
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <Section title="Key metrics" desc="Everything that matters at a glance.">
+                  <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 xl:grid-cols-4">
+                    <Stat
+                      label="Posts"
+                      value={m.live.length}
+                      sub={`${m.posts7} this week · ${m.posts30} this month`}
+                    />
+                    <Stat
+                      label="Members"
+                      value={data.users.length}
+                      sub={`${m.activeSince30} active in 30 days`}
+                    />
+                    <Stat
+                      label="Likes"
+                      value={m.totalLikes}
+                      sub={`${(m.totalLikes / Math.max(m.live.length, 1)).toFixed(1)} avg per post`}
+                      tone="heart"
+                    />
+                    <Stat
+                      label="Comments"
+                      value={data.comments.length}
+                      sub={`${m.comments30} this month`}
+                    />
+                    <Stat label="Engagement" value={engagement} sub="likes + comments per post" />
+                    <Stat
+                      label="Site streak"
+                      value={m.siteStreaks.current ? `${m.siteStreaks.current}d` : "0"}
+                      sub={`best ever: ${m.siteStreaks.longest} days straight`}
+                      tone={m.siteStreaks.current ? "green" : undefined}
+                    />
+                    <Stat
+                      label="Last post"
+                      value={
+                        m.daysSinceLastPost === null
+                          ? "—"
+                          : m.daysSinceLastPost === 0
+                            ? "Today"
+                            : `${m.daysSinceLastPost}d ago`
                       }
-                      className={btn}
-                    >
-                      {data.claims.every((c) => selectedClaims.has(c.id))
-                        ? "Unselect all"
-                        : "Select all"}
-                    </button>
-                    {selectedClaims.size > 0 && (
-                      <>
-                        <button
-                          onClick={() => {
-                            const sel = data.claims.filter((c) => selectedClaims.has(c.id));
-                            if (
-                              !confirm(
-                                `Approve ${sel.length} claim${sel.length === 1 ? "" : "s"} and credit each claimant as the post owner?`
-                              )
-                            )
-                              return;
-                            approveClaims(sel);
-                            setSelectedClaims(new Set());
-                          }}
-                          className={btnPrimary}
-                        >
-                          Approve {selectedClaims.size} selected
-                        </button>
-                        <button
-                          onClick={() => {
-                            const sel = data.claims.filter((c) => selectedClaims.has(c.id));
-                            if (!confirm(`Decline ${sel.length} claim${sel.length === 1 ? "" : "s"}?`))
-                              return;
-                            declineClaims(sel);
-                            setSelectedClaims(new Set());
-                          }}
-                          className={btnDanger}
-                        >
-                          Decline {selectedClaims.size} selected
-                        </button>
-                        <button onClick={() => setSelectedClaims(new Set())} className={btn}>
-                          Clear
-                        </button>
-                      </>
+                      sub={fmtDate(m.live[0]?.timestamp ?? null)}
+                      tone={
+                        m.daysSinceLastPost !== null && m.daysSinceLastPost > 2 ? "gold" : undefined
+                      }
+                    />
+                    <Stat
+                      label="Push devices"
+                      value={data.subs.length}
+                      sub={`${subsByUid.size} member${subsByUid.size === 1 ? "" : "s"} enabled`}
+                    />
+                  </div>
+                </Section>
+
+                <div className="grid gap-4 xl:grid-cols-[1.4fr_1fr]">
+                  <Section
+                    title="Growth"
+                    desc="Every post ever shared, added up month by month."
+                  >
+                    <AreaChart data={m.postsGrowth} tone="255,59,92" />
+                  </Section>
+                  <Section title="At a glance">
+                    <Facts
+                      rows={[
+                        ["Lurkers (0 posts & comments)", m.lurkers.length],
+                        ["Posts with a caption", pct(m.captioned.length, m.live.length)],
+                        ["Comments per post", (data.comments.length / Math.max(m.live.length, 1)).toFixed(1)],
+                        [
+                          "Busiest day",
+                          m.perDay[0]
+                            ? `${m.perDay[0][1]} on ${fmtDate(new Date(m.perDay[0][0]))}`
+                            : "—",
+                        ],
+                        ["First post", fmtDate(m.live.at(-1)?.timestamp ?? null)],
+                        ["Anonymous-era posts", m.anonPosts],
+                        [
+                          "Portrait photos",
+                          m.withDims
+                            ? `${Math.round((m.aspect.portrait / m.withDims) * 100)}%`
+                            : "—",
+                        ],
+                      ]}
+                    />
+                  </Section>
+                </div>
+
+                <Section
+                  title="Activity heatmap"
+                  desc="Posts and comments per day over the last six months."
+                >
+                  <Heatmap counts={m.heatCounts} />
+                </Section>
+
+                <div className="grid gap-4 xl:grid-cols-2">
+                  <Section title="Latest posts" flush>
+                    {m.live.slice(0, 6).map((p) => (
+                      <Row
+                        key={p.id}
+                        lead={
+                          p.imagePath ? (
+                            <Thumb path={p.imagePath} />
+                          ) : (
+                            <div className="h-11 w-11 shrink-0 rounded-lg bg-field" />
+                          )
+                        }
+                        title={
+                          <span className="block truncate">
+                            <span className="font-semibold">{p.username || "Anonymous"}</span>
+                            {p.caption && <span className="text-body"> — {p.caption}</span>}
+                          </span>
+                        }
+                        meta={
+                          <>
+                            {fmtDateTime(p.timestamp)} · ♥ {p.likedBy.length} · 💬{" "}
+                            {m.commentsByPost.get(p.id) ?? 0}
+                          </>
+                        }
+                        actions={
+                          <Link href={`/p/${p.id}`} target="_blank" className={btn}>
+                            Open
+                          </Link>
+                        }
+                      />
+                    ))}
+                    {m.live.length === 0 && (
+                      <div className="p-4">
+                        <Empty>No posts yet.</Empty>
+                      </div>
                     )}
-                    <span className="ml-auto flex gap-2">
+                  </Section>
+                  <Section
+                    title="Recent admin activity"
+                    right={
+                      <button onClick={() => setTab("system")} className={btn}>
+                        Full log
+                      </button>
+                    }
+                    flush
+                  >
+                    {data.log.slice(0, 6).map((entry) => (
+                      <Row
+                        key={entry.id}
+                        align="start"
+                        title={
+                          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <span className="rounded border-[0.5px] border-edge bg-white/[0.04] px-1.5 py-0.5 font-mono text-[10.5px] text-body">
+                              {entry.action}
+                            </span>
+                            <span className="min-w-0 truncate text-mut">{entry.detail}</span>
+                          </span>
+                        }
+                        meta={fmtDateTime(entry.at)}
+                      />
+                    ))}
+                    {data.log.length === 0 && (
+                      <div className="p-4">
+                        <Empty>No admin actions recorded yet.</Empty>
+                      </div>
+                    )}
+                  </Section>
+                </div>
+              </>
+            )}
+
+            {/* ------------------------------- approvals ------------------------------- */}
+            {tab === "approvals" && (
+              <Section
+                title="Post claims"
+                count={data.claims.length}
+                desc="Members asking to be credited as the owner of an Anonymous post. Approving reassigns the post to them; declining leaves it Anonymous."
+                right={
+                  data.claims.length > 0 ? (
+                    <>
                       <button
                         onClick={() => {
                           if (!confirm(`Approve ALL ${data.claims.length} pending claims?`)) return;
@@ -1711,41 +2264,119 @@ export default function AdminPage() {
                       >
                         Decline all
                       </button>
-                    </span>
+                    </>
+                  ) : undefined
+                }
+                flush
+              >
+                {data.claims.length === 0 ? (
+                  <div className="p-4">
+                    <Empty>
+                      No pending claims. Members can claim Anonymous posts from the feed.
+                    </Empty>
                   </div>
-                  <div className="flex flex-col">
+                ) : (
+                  <>
+                    <div className="flex flex-wrap items-center gap-2 border-b-[0.5px] border-field px-4 py-3">
+                      <button
+                        onClick={() =>
+                          setSelectedClaims((s) =>
+                            data.claims.every((c) => s.has(c.id))
+                              ? new Set()
+                              : new Set(data.claims.map((c) => c.id))
+                          )
+                        }
+                        className={btn}
+                      >
+                        {data.claims.every((c) => selectedClaims.has(c.id))
+                          ? "Unselect all"
+                          : "Select all"}
+                      </button>
+                      {selectedClaims.size > 0 ? (
+                        <>
+                          <span className="text-[11px] tabular-nums text-mut">
+                            {selectedClaims.size} selected
+                          </span>
+                          <span className="ml-auto flex gap-2">
+                            <button
+                              onClick={() => {
+                                const sel = data.claims.filter((c) => selectedClaims.has(c.id));
+                                if (
+                                  !confirm(
+                                    `Approve ${sel.length} claim${sel.length === 1 ? "" : "s"} and credit each claimant as the post owner?`
+                                  )
+                                )
+                                  return;
+                                approveClaims(sel);
+                                setSelectedClaims(new Set());
+                              }}
+                              className={btnPrimary}
+                            >
+                              Approve selected
+                            </button>
+                            <button
+                              onClick={() => {
+                                const sel = data.claims.filter((c) => selectedClaims.has(c.id));
+                                if (
+                                  !confirm(
+                                    `Decline ${sel.length} claim${sel.length === 1 ? "" : "s"}?`
+                                  )
+                                )
+                                  return;
+                                declineClaims(sel);
+                                setSelectedClaims(new Set());
+                              }}
+                              className={btnDanger}
+                            >
+                              Decline selected
+                            </button>
+                            <button onClick={() => setSelectedClaims(new Set())} className={btn}>
+                              Clear
+                            </button>
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-[11px] text-dim">
+                          Select claims to act on several at once.
+                        </span>
+                      )}
+                    </div>
                     {data.claims.map((c) => {
                       const post = photoById.get(c.postId);
                       const dupes = data.claims.filter((x) => x.postId === c.postId).length;
                       return (
-                        <div
+                        <Row
                           key={c.id}
-                          className="flex items-center gap-3 border-t-[0.5px] border-field py-2.5"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={selectedClaims.has(c.id)}
-                            onChange={(e) =>
-                              setSelectedClaims((s) => {
-                                const next = new Set(s);
-                                if (e.target.checked) next.add(c.id);
-                                else next.delete(c.id);
-                                return next;
-                              })
-                            }
-                            className="h-4 w-4 shrink-0 accent-white"
-                          />
-                          {post?.imagePath ? (
-                            <Thumb path={post.imagePath} />
-                          ) : (
-                            <div className="h-11 w-11 shrink-0 rounded bg-field" />
-                          )}
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-xs">
-                              <span className="font-bold">{c.username}</span>{" "}
-                              <span className="text-dim">({c.email})</span>
-                            </p>
-                            <p className="truncate text-[10px] text-dim">
+                          lead={
+                            <>
+                              <Checkbox
+                                label={`Select ${c.username}'s claim`}
+                                checked={selectedClaims.has(c.id)}
+                                onChange={(on) =>
+                                  setSelectedClaims((s) => {
+                                    const next = new Set(s);
+                                    if (on) next.add(c.id);
+                                    else next.delete(c.id);
+                                    return next;
+                                  })
+                                }
+                              />
+                              {post?.imagePath ? (
+                                <Thumb path={post.imagePath} />
+                              ) : (
+                                <div className="h-11 w-11 shrink-0 rounded-lg bg-field" />
+                              )}
+                            </>
+                          }
+                          title={
+                            <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+                              <span className="font-semibold">{c.username}</span>
+                              <span className="truncate text-dim">{c.email}</span>
+                              {dupes > 1 && <Pill tone="warn">{dupes} claim this</Pill>}
+                            </span>
+                          }
+                          meta={
+                            <>
                               claims{" "}
                               {post
                                 ? post.caption
@@ -1753,599 +2384,900 @@ export default function AdminPage() {
                                   : "a post"
                                 : "a deleted post"}{" "}
                               · {fmtDateTime(c.at)}
-                              {dupes > 1 && (
-                                <span className="text-[#d4a017]"> · {dupes} people claim this</span>
-                              )}
-                            </p>
-                          </div>
-                          <button
-                            onClick={() => {
-                              if (!confirm(`Approve — credit ${c.username} as the owner of this post?`))
-                                return;
-                              approveClaims([c]);
-                              setSelectedClaims((s) => {
-                                const n = new Set(s);
-                                n.delete(c.id);
-                                return n;
-                              });
-                            }}
-                            className={btn}
-                          >
-                            Approve
-                          </button>
-                          <button
-                            onClick={() => {
-                              if (!confirm(`Decline ${c.username}'s claim?`)) return;
-                              declineClaims([c]);
-                              setSelectedClaims((s) => {
-                                const n = new Set(s);
-                                n.delete(c.id);
-                                return n;
-                              });
-                            }}
-                            className={btnDanger}
-                          >
-                            Decline
-                          </button>
-                        </div>
+                            </>
+                          }
+                          actions={
+                            <>
+                              <button
+                                onClick={() => {
+                                  if (
+                                    !confirm(
+                                      `Approve — credit ${c.username} as the owner of this post?`
+                                    )
+                                  )
+                                    return;
+                                  approveClaims([c]);
+                                  setSelectedClaims((s) => {
+                                    const n = new Set(s);
+                                    n.delete(c.id);
+                                    return n;
+                                  });
+                                }}
+                                className={btn}
+                              >
+                                Approve
+                              </button>
+                              <button
+                                onClick={() => {
+                                  if (!confirm(`Decline ${c.username}'s claim?`)) return;
+                                  declineClaims([c]);
+                                  setSelectedClaims((s) => {
+                                    const n = new Set(s);
+                                    n.delete(c.id);
+                                    return n;
+                                  });
+                                }}
+                                className={btnDanger}
+                              >
+                                Decline
+                              </button>
+                            </>
+                          }
+                        />
                       );
                     })}
-                  </div>
-                </>
-              )}
-            </Section>
-          )}
-
-          {tab === "system" && (
-            <SecurityPanel user={user} unlockedAt={unlockedAt} onLock={lock} />
-          )}
-
-          {tab === "broadcast" && (
-            <BroadcastComposer
-              user={user}
-              deviceCount={data.subs.length}
-              onSent={(message, result, test) => {
-                if (!test) log("broadcast-push", `“${message.slice(0, 100)}” — ${result}`);
-              }}
-            />
-          )}
-
-          {tab === "broadcast" && (
-            <AnnouncementManager
-              key={data.announcement?.updatedAt?.getTime() ?? "none"}
-              initial={data.announcement}
-              onSave={saveAnnouncement}
-            />
-          )}
-
-          {tab === "members" && (
-            <Section title={`Member feedback (${data.feedback.length})`}>
-              <div className="flex flex-col">
-                {data.feedback.map((f) => (
-                  <div key={f.id} className="flex items-start gap-3 border-t-[0.5px] border-field py-2.5">
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs">
-                        <span className="font-bold">{f.username}</span>{" "}
-                        <span className="text-dim">({f.email})</span>
-                      </p>
-                      <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-body">{f.text}</p>
-                      <p className="mt-1 text-[10px] text-dim">{fmtDateTime(f.at)}</p>
-                    </div>
-                    <button onClick={() => adminDeleteFeedback(f.id)} className={btnDanger}>
-                      Remove
-                    </button>
-                  </div>
-                ))}
-                {data.feedback.length === 0 && (
-                  <p className="text-xs text-dim">
-                    Nothing yet — notes members send from Settings land here.
-                  </p>
+                  </>
                 )}
-              </div>
-            </Section>
-          )}
+              </Section>
+            )}
 
-          {tab === "overview" && (
-            <Section title="Key metrics">
-              <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
-            <Stat label="Posts" value={m.live.length} sub={`${m.posts7} this week · ${m.posts30} this month`} />
-            <Stat label="Comments" value={data.comments.length} sub={`${m.comments30} this month`} />
-            <Stat label="Likes" value={m.totalLikes} sub={`${(m.totalLikes / Math.max(m.live.length, 1)).toFixed(1)} avg per post`} />
-            <Stat label="Members" value={data.users.length} sub={`${m.activeSince30} active last 30 days`} />
-            <Stat label="Engagement" value={engagement} sub="likes + comments per post" />
-            <Stat label="Lurkers" value={m.lurkers.length} sub="members with 0 posts & comments" />
-            <Stat
-              label="Site streak"
-              value={m.siteStreaks.current ? `${m.siteStreaks.current}d` : "0"}
-              sub={`best ever: ${m.siteStreaks.longest} days straight`}
-              tone={m.siteStreaks.current ? "green" : undefined}
-            />
-            <Stat
-              label="Last post"
-              value={
-                m.daysSinceLastPost === null
-                  ? "—"
-                  : m.daysSinceLastPost === 0
-                    ? "Today"
-                    : `${m.daysSinceLastPost}d ago`
-              }
-              sub={fmtDate(m.live[0]?.timestamp ?? null)}
-              tone={m.daysSinceLastPost !== null && m.daysSinceLastPost > 2 ? "gold" : undefined}
-            />
-            <Stat label="Push devices" value={data.subs.length} sub={`${subsByUid.size} member${subsByUid.size === 1 ? "" : "s"} enabled`} />
-            <Stat label="Legacy visitors" value={data.legacy.length} sub="unique devices, PHP era" />
-            <Stat label="Captioned" value={pct(m.captioned.length, m.live.length)} sub={`avg ${Math.round(m.captioned.reduce((n, p) => n + (p.caption?.length ?? 0), 0) / Math.max(m.captioned.length, 1))} chars`} />
-            <Stat label="Comments / post" value={(data.comments.length / Math.max(m.live.length, 1)).toFixed(1)} />
-            <Stat
-              label="Busiest day"
-              value={m.perDay[0]?.[1] ?? 0}
-              sub={m.perDay[0] ? `posts on ${fmtDate(new Date(m.perDay[0][0]))}` : undefined}
-            />
-            <Stat label="First post" value={fmtDate(m.live.at(-1)?.timestamp ?? null)} />
-            <Stat label="Anonymous era" value={m.anonPosts} sub="posts without an account" />
-            <Stat
-              label="Orientation"
-              value={m.withDims ? `${Math.round((m.aspect.portrait / m.withDims) * 100)}%` : "—"}
-              sub={`portrait · ${m.aspect.landscape} landscape, ${m.aspect.square} square`}
-            />
-              </div>
-            </Section>
-          )}
+            {/* ------------------------------- analytics ------------------------------- */}
+            {tab === "analytics" && (
+              <>
+                <div className="grid items-start gap-4 xl:grid-cols-2">
+                  <Section title="Posts per month">
+                    <BarChart data={m.postsMonthly} />
+                  </Section>
+                  <Section title="All-time posts (cumulative)">
+                    <AreaChart data={m.postsGrowth} />
+                  </Section>
+                  <Section title="Comments per month">
+                    <BarChart data={m.commentsMonthly} />
+                  </Section>
+                  <Section title="Active members per month">
+                    <BarChart data={m.activeMonthly} />
+                  </Section>
+                  <Section title="Posting activity — hour of day">
+                    <BarChart data={m.hourHist} />
+                  </Section>
+                  <Section title="Posting activity — day of week">
+                    <BarChart data={m.weekdayHist} />
+                  </Section>
+                  <Section
+                    title="Image orientation"
+                    desc="Aspect ratio of posts with known dimensions."
+                  >
+                    <StackBar
+                      segments={[
+                        { label: "Portrait", v: m.aspect.portrait },
+                        { label: "Landscape", v: m.aspect.landscape },
+                        { label: "Square", v: m.aspect.square },
+                      ]}
+                    />
+                  </Section>
+                </div>
 
-          {tab === "overview" && (
-            <Section title="Activity heatmap — last 6 months (posts + comments)">
-              <Heatmap counts={m.heatCounts} />
-            </Section>
-          )}
+                <Section title="Content analytics" desc="What everyone actually writes about.">
+                  <div className="grid gap-2.5 lg:grid-cols-3">
+                    <Board title="Top words (captions + comments)" rows={m.words} />
+                    <Board title="Top emoji" rows={m.emoji} />
+                    <div className="rounded-xl border-[0.5px] border-field bg-card p-3.5">
+                      <p className="mb-2.5 text-[10px] font-bold uppercase tracking-[1.5px] text-mut">
+                        Writing habits
+                      </p>
+                      <Facts
+                        rows={[
+                          ["Avg comment length", `${m.avgCommentLen} chars`],
+                          ["Posts with captions", pct(m.captioned.length, m.live.length)],
+                          [
+                            "Posts before 6 AM",
+                            m.live.filter((p) => p.timestamp!.getHours() < 6).length,
+                          ],
+                          [
+                            "Avg caption length",
+                            `${Math.round(
+                              m.captioned.reduce((n, p) => n + (p.caption?.length ?? 0), 0) /
+                                Math.max(m.captioned.length, 1)
+                            )} chars`,
+                          ],
+                        ]}
+                      />
+                    </div>
+                  </div>
+                </Section>
+              </>
+            )}
 
-          {tab === "analytics" && (
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Section title="Posts per month">
-                <BarChart data={m.postsMonthly} />
-              </Section>
-              <Section title="All-time posts (cumulative)">
-                <AreaChart data={m.postsGrowth} />
-              </Section>
-              <Section title="Comments per month">
-                <BarChart data={m.commentsMonthly} />
-              </Section>
-              <Section title="Active members per month">
-                <BarChart data={m.activeMonthly} />
-              </Section>
-              <Section title="Posting activity — hour of day">
-                <BarChart data={m.hourHist} />
-              </Section>
-              <Section title="Posting activity — day of week">
-                <BarChart data={m.weekdayHist} />
-              </Section>
-              <Section title="Legacy visitor growth (PHP era, cumulative)">
-                <AreaChart data={m.legacyGrowth} />
-              </Section>
-              <Section title="Image orientation" desc="Aspect ratio of posts with known dimensions.">
-                <StackBar
-                  segments={[
-                    { label: "Portrait", v: m.aspect.portrait },
-                    { label: "Landscape", v: m.aspect.landscape },
-                    { label: "Square", v: m.aspect.square },
+            {/* ----------------------------- leaderboards ------------------------------ */}
+            {tab === "leaderboards" && (
+              <>
+                <Section title="People" desc="Top eight in each race, all time.">
+                  <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
+                    <Board title="Top posters" rows={m.topPosters} />
+                    <Board title="Top commenters" rows={m.topCommenters} />
+                    <Board title="Most likes given" rows={m.likesGiven} />
+                    <Board title="Most likes received" rows={m.likesReceived} />
+                    <Board title="Longest posting streaks" rows={m.userStreaks} />
+                    <Board title="Night owls (posts before 6 AM)" rows={m.nightOwls} />
+                  </div>
+                </Section>
+                <Section title="Posts">
+                  <div className="grid gap-2.5 xl:grid-cols-2">
+                    <Board
+                      title="Most liked posts"
+                      rows={m.topLiked.map((p) => [
+                        `${p.username || "Anonymous"}${p.caption ? ` — “${p.caption.slice(0, 32)}”` : ""}`,
+                        `♥ ${p.likedBy.length}`,
+                      ])}
+                    />
+                    <Board
+                      title="Most commented posts"
+                      rows={m.topCommented.map((p) => [
+                        `${p.username || "Anonymous"}${p.caption ? ` — “${p.caption.slice(0, 32)}”` : ""}`,
+                        `💬 ${m.commentsByPost.get(p.id) ?? 0}`,
+                      ])}
+                    />
+                  </div>
+                </Section>
+              </>
+            )}
+
+            {/* -------------------------------- members -------------------------------- */}
+            {tab === "members" && (
+              <>
+                <AccessPanel
+                  usernames={new Map(data.users.map((u) => [u.uid ?? "", u.username]))}
+                  onLog={log}
+                />
+                <Section
+                  title="Members"
+                  count={data.users.length}
+                  right={
+                    <button onClick={exportMembersCsv} className={btn}>
+                      <AdminIcon name="download" className="h-3.5 w-3.5" />
+                      CSV
+                    </button>
+                  }
+                  flush
+                >
+                  <div className="flex flex-col gap-2 border-b-[0.5px] border-field px-4 py-3 sm:flex-row sm:items-center">
+                    <SearchInput
+                      value={mSearch}
+                      onChange={setMSearch}
+                      placeholder="Search name or email…"
+                    />
+                    <select
+                      value={mSort}
+                      onChange={(e) => setMSort(e.target.value as typeof mSort)}
+                      className={selectCls}
+                      aria-label="Sort members"
+                    >
+                      <option value="posts">Most posts</option>
+                      <option value="comments">Most comments</option>
+                      <option value="likes">Most likes received</option>
+                      <option value="active">Recently active</option>
+                      <option value="joined">Newest members</option>
+                      <option value="name">Name A–Z</option>
+                    </select>
+                  </div>
+                  {memberRows.length === 0 ? (
+                    <div className="p-4">
+                      <Empty>No members match “{mSearch}”.</Empty>
+                    </div>
+                  ) : (
+                    <>
+                    <div className="sm:hidden">
+                      {memberRows.map(({ u, posts, comments, likes, last }) => {
+                        const open = openMember === u.email;
+                        return (
+                          <div
+                            key={u.email}
+                            className="border-b-[0.5px] border-field px-4 py-3 last:border-b-0"
+                          >
+                            <div className="flex items-center gap-2.5">
+                              {memberAvatar(u)}
+                              <span className="min-w-0 flex-1">
+                                {memberName(u)}
+                                <span className="block truncate text-[10.5px] text-dim">
+                                  {u.email}
+                                </span>
+                              </span>
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-dim">
+                              <span>
+                                <span className="font-bold tabular-nums text-white">{posts}</span>{" "}
+                                posts
+                              </span>
+                              <span>
+                                <span className="font-bold tabular-nums text-white">{comments}</span>{" "}
+                                comments
+                              </span>
+                              <span>
+                                <span className="font-bold tabular-nums text-white">{likes}</span> ♥
+                                received
+                              </span>
+                              <span>joined {fmtDate(u.joinedAt)}</span>
+                              <span>active {fmtDate(last)}</span>
+                            </div>
+                            <div className="mt-2.5 flex flex-wrap gap-1.5">
+                              {memberActions(u, open)}
+                            </div>
+                            {open && (
+                              <div className="mt-2.5">
+                                <MemberDetail
+                                  u={u}
+                                  data={data}
+                                  live={m.live}
+                                  nameOf={m.nameOf}
+                                  onDeletePost={adminDeletePost}
+                                />
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="hidden sm:block">
+                    <Table
+                      minWidth={760}
+                      head={
+                        <>
+                          <th className="py-2.5 pl-4 pr-3 font-bold">Member</th>
+                          <th className="py-2.5 pr-3 font-bold">Joined</th>
+                          <th className="py-2.5 pr-3 font-bold">Last active</th>
+                          <th className="py-2.5 pr-3 text-right font-bold">Posts</th>
+                          <th className="py-2.5 pr-3 text-right font-bold">Comments</th>
+                          <th className="py-2.5 pr-3 text-right font-bold">♥ Recv</th>
+                          <th className="py-2.5 pr-4"></th>
+                        </>
+                      }
+                    >
+                      {memberRows.map(({ u, posts, comments, likes, last }) => {
+                        const open = openMember === u.email;
+                        return (
+                          <Fragment key={u.email}>
+                            <tr
+                              className={`border-b-[0.5px] border-field transition-colors hover:bg-white/[0.02] ${
+                                open ? "bg-white/[0.03]" : ""
+                              }`}
+                            >
+                              <td className="py-2.5 pl-4 pr-3">
+                                <div className="flex items-center gap-2.5">
+                                  {memberAvatar(u)}
+                                  <span className="min-w-0">
+                                    {memberName(u)}
+                                    <span className="block truncate text-[10.5px] text-dim">
+                                      {u.email}
+                                    </span>
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="whitespace-nowrap py-2.5 pr-3 text-mut">
+                                {fmtDate(u.joinedAt)}
+                              </td>
+                              <td className="whitespace-nowrap py-2.5 pr-3 text-mut">
+                                {fmtDate(last)}
+                              </td>
+                              <td className="py-2.5 pr-3 text-right tabular-nums">{posts}</td>
+                              <td className="py-2.5 pr-3 text-right tabular-nums">{comments}</td>
+                              <td className="py-2.5 pr-3 text-right tabular-nums">{likes}</td>
+                              <td className="py-2.5 pr-4 text-right">
+                                <div className="flex justify-end gap-1.5">{memberActions(u, open)}</div>
+                              </td>
+                            </tr>
+                            {open && (
+                              <tr className="border-b-[0.5px] border-field bg-white/[0.02]">
+                                <td colSpan={7} className="px-4 pb-4 pt-1">
+                                  <MemberDetail
+                                    u={u}
+                                    data={data}
+                                    live={m.live}
+                                    nameOf={m.nameOf}
+                                    onDeletePost={adminDeletePost}
+                                  />
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        );
+                      })}
+                    </Table>
+                    </div>
+                    </>
+                  )}
+                  <p className="border-t-[0.5px] border-field px-4 py-3 text-[10.5px] leading-relaxed text-dim">
+                    Muting is enforced by the server — a muted member can still browse and like, but
+                    can&apos;t write posts or comments. Logins, invites and password resets are
+                    managed above.
+                  </p>
+                </Section>
+
+                <Section
+                  title="Blocks"
+                  count={m.blockEdges.length}
+                  desc="Who has blocked who. Blocking is mutual invisibility — neither side sees the other's posts, profile, comments, notifications or DMs — and every check that enforces it, on the server and in the app, matches on the uids below and nothing else."
+                  flush
+                >
+                  <div className="grid grid-cols-2 gap-2.5 border-b-[0.5px] border-field p-4 sm:grid-cols-4">
+                    <Stat
+                      label="Blocks"
+                      value={m.blockEdges.length}
+                      sub="one per direction"
+                    />
+                    <Stat
+                      label="Mutual"
+                      value={m.mutualBlocks}
+                      sub="both blocked each other"
+                    />
+                    <Stat
+                      label="Lists"
+                      value={data.blocks.length}
+                      sub="members who ever blocked"
+                    />
+                    <Stat
+                      label="Not matching"
+                      value={m.brokenBlocks.length}
+                      sub="aimed at a uid nobody acts under"
+                      tone={m.brokenBlocks.length ? "red" : undefined}
+                    />
+                  </div>
+                  {m.blockEdges.length === 0 ? (
+                    <div className="p-4">
+                      <Empty>Nobody has blocked anyone.</Empty>
+                    </div>
+                  ) : (
+                    m.blockEdges.map((e) => (
+                      <Row
+                        key={`${e.from.uid}>${e.to.uid}`}
+                        align="start"
+                        title={
+                          <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+                            <span className="font-semibold">
+                              {e.from.name ?? "Unknown member"}
+                            </span>
+                            <span className="text-dim">blocked</span>
+                            <span className="font-semibold">{e.to.name ?? "Unknown member"}</span>
+                            {e.mutual && <Pill tone="white">Both ways</Pill>}
+                            {e.problem && <Pill tone="bad">Not matching</Pill>}
+                          </span>
+                        }
+                        meta={
+                          <>
+                            <span className="flex flex-wrap items-center gap-1.5">
+                              {uidChip(e.from.uid)}
+                              <span>blocked</span>
+                              {uidChip(e.to.uid)}
+                            </span>
+                            <span className="mt-1 block">
+                              That uid has {e.to.posts} post{e.to.posts === 1 ? "" : "s"} ·{" "}
+                              {e.to.devices} push device{e.to.devices === 1 ? "" : "s"}
+                              {e.to.email ? ` · ${e.to.email}` : ""}
+                              {e.to.lastPost ? ` · last posted ${fmtDate(e.to.lastPost)}` : ""}
+                            </span>
+                            {e.problem && (
+                              <span className="mt-1 block text-bad">
+                                {e.problem}
+                                {e.liveTwin && (
+                                  <>
+                                    {" "}
+                                    They post as {uidChip(e.liveTwin)} — that&apos;s the uid a
+                                    block has to name.
+                                  </>
+                                )}
+                              </span>
+                            )}
+                          </>
+                        }
+                        actions={
+                          e.to.name ? (
+                            <Link href={`/u/${e.to.uid}`} target="_blank" className={btn}>
+                              Profile
+                            </Link>
+                          ) : undefined
+                        }
+                      />
+                    ))
+                  )}
+                  <p className="border-t-[0.5px] border-field px-4 py-3 text-[10.5px] leading-relaxed text-dim">
+                    Read-only. A block list belongs to the member who made it — the server lets
+                    only its owner change it, and unblocking on someone&apos;s behalf isn&apos;t the
+                    admin&apos;s call. A row marked <b className="text-bad">not matching</b> is the
+                    failure worth acting on: the person who set it believes they&apos;re invisible
+                    to someone who still sees everything, and the uid it names is the reason.
+                  </p>
+                </Section>
+
+                <Section
+                  title="Member feedback"
+                  count={data.feedback.length}
+                  desc="Notes members send from Settings. Everything also lands in the admins chat, where it can be answered."
+                  flush
+                >
+                  {data.feedback.length === 0 ? (
+                    <div className="p-4">
+                      <Empty>Nothing yet — notes members send from Settings land here, and in the admins chat.</Empty>
+                    </div>
+                  ) : (
+                    data.feedback.map((f) => (
+                      <Row
+                        key={f.id}
+                        align="start"
+                        title={
+                          <span className="flex flex-wrap items-center gap-x-1.5">
+                            <span className="font-semibold">{f.username}</span>
+                            <span className="text-dim">{f.email}</span>
+                          </span>
+                        }
+                        meta={
+                          <>
+                            <span className="mb-1 block whitespace-pre-wrap text-[12.5px] leading-relaxed text-body">
+                              {f.text}
+                            </span>
+                            {fmtDateTime(f.at)}
+                          </>
+                        }
+                        actions={
+                          <button onClick={() => adminDeleteFeedback(f.id)} className={btnDanger}>
+                            Remove
+                          </button>
+                        }
+                      />
+                    ))
+                  )}
+                </Section>
+              </>
+            )}
+
+            {/* ------------------------------ moderation ------------------------------- */}
+            {tab === "moderation" && (
+              <>
+                <Segmented
+                  value={modView}
+                  onChange={setModView}
+                  options={[
+                    { id: "posts", label: "Posts", count: m.live.length },
+                    { id: "trash", label: "Deleted", count: m.trashed.length },
+                    { id: "comments", label: "Comments", count: data.comments.length },
                   ]}
                 />
-              </Section>
-            </div>
-          )}
 
-          {tab === "analytics" && (
-            <Section title="Content analytics">
-          <div className="grid gap-2.5 sm:grid-cols-2">
-            <Board title="Top words (captions + comments)" rows={m.words} />
-            <div className="flex flex-col gap-2.5">
-              <Board title="Top emoji" rows={m.emoji} />
-              <div className="rounded-lg border-[0.5px] border-field bg-card p-3.5">
-                <p className="mb-2.5 text-[10px] font-bold uppercase tracking-[1.5px] text-mut">
-                  Writing habits
-                </p>
-                <div className="flex flex-col gap-1.5 text-[13px]">
-                  <p className="flex justify-between"><span>Avg comment length</span><span className="font-bold tabular-nums">{m.avgCommentLen} chars</span></p>
-                  <p className="flex justify-between"><span>Posts with captions</span><span className="font-bold tabular-nums">{pct(m.captioned.length, m.live.length)}</span></p>
-                  <p className="flex justify-between"><span>Posts before 6 AM</span><span className="font-bold tabular-nums">{m.live.filter((p) => p.timestamp!.getHours() < 6).length}</span></p>
-                </div>
-              </div>
-            </div>
-          </div>
-            </Section>
-          )}
+                {modView === "posts" && (
+                  <Section
+                    title="Posts"
+                    count={m.live.length}
+                    right={
+                      <button onClick={exportPostsCsv} className={btn}>
+                        <AdminIcon name="download" className="h-3.5 w-3.5" />
+                        CSV
+                      </button>
+                    }
+                    flush
+                  >
+                    <div className="flex flex-col gap-2 border-b-[0.5px] border-field px-4 py-3 sm:flex-row sm:items-center">
+                      <SearchInput
+                        value={search}
+                        onChange={(v) => {
+                          setSearch(v);
+                          setPage(0);
+                        }}
+                        placeholder="Search caption or member…"
+                      />
+                      <select
+                        value={sort}
+                        onChange={(e) => {
+                          setSort(e.target.value as typeof sort);
+                          setPage(0);
+                        }}
+                        className={selectCls}
+                        aria-label="Sort posts"
+                      >
+                        <option value="new">Newest</option>
+                        <option value="liked">Most liked</option>
+                        <option value="commented">Most commented</option>
+                      </select>
+                    </div>
 
-          {tab === "leaderboards" && (
-            <Section title="Leaderboards">
-              <div className="grid gap-2.5 sm:grid-cols-2">
-            <Board title="Top posters" rows={m.topPosters} />
-            <Board title="Top commenters" rows={m.topCommenters} />
-            <Board title="Most likes given" rows={m.likesGiven} />
-            <Board title="Most likes received" rows={m.likesReceived} />
-            <Board title="Longest posting streaks" rows={m.userStreaks} />
-            <Board title="Night owls (posts before 6 AM)" rows={m.nightOwls} />
-            <Board
-              title="Most liked posts"
-              rows={m.topLiked.map((p) => [
-                `${p.username || "Anonymous"}${p.caption ? ` — “${p.caption.slice(0, 32)}”` : ""}`,
-                `♥ ${p.likedBy.length}`,
-              ])}
-            />
-            <Board
-              title="Most commented posts"
-              rows={m.topCommented.map((p) => [
-                `${p.username || "Anonymous"}${p.caption ? ` — “${p.caption.slice(0, 32)}”` : ""}`,
-                `💬 ${m.commentsByPost.get(p.id) ?? 0}`,
-              ])}
-            />
-          </div>
-            </Section>
-          )}
-
-          {tab === "members" && (
-            <Section title={`Members (${data.users.length})`}>
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[680px] text-left text-xs">
-              <thead>
-                <tr className="text-[9px] font-bold uppercase tracking-[1.2px] text-dim">
-                  <th className="pb-2 pr-3">User</th>
-                  <th className="pb-2 pr-3">Joined</th>
-                  <th className="pb-2 pr-3">Last active</th>
-                  <th className="pb-2 pr-3 text-right">Posts</th>
-                  <th className="pb-2 pr-3 text-right">Comments</th>
-                  <th className="pb-2 pr-3 text-right">♥ Recv</th>
-                  <th className="pb-2"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.users.map((u) => {
-                  const posts = m.live.filter((p) => p.username === u.username);
-                  const open = openMember === u.email;
-                  return (
-                    <Fragment key={u.email}>
-                      <tr className="border-t-[0.5px] border-field">
-                        <td className="py-2 pr-3">
-                          {u.uid ? (
-                            <Link href={`/u/${u.uid}`} className="font-bold">
-                              {u.username}
-                            </Link>
-                          ) : (
-                            <span className="font-bold">{u.username}</span>
-                          )}
-                          {u.muted && (
-                            <span className="ml-1.5 rounded bg-[#1a0a0a] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[1px] text-[#e74c3c]">
-                              Muted
-                            </span>
-                          )}
-                          <span className="block text-[10px] text-dim">{u.email}</span>
-                        </td>
-                        <td className="py-2 pr-3 whitespace-nowrap text-mut">{fmtDate(u.joinedAt)}</td>
-                        <td className="py-2 pr-3 whitespace-nowrap text-mut">
-                          {fmtDate(m.lastActive.get(u.username) ?? null)}
-                        </td>
-                        <td className="py-2 pr-3 text-right tabular-nums">{posts.length}</td>
-                        <td className="py-2 pr-3 text-right tabular-nums">
-                          {data.comments.filter((c) => c.username === u.username).length}
-                        </td>
-                        <td className="py-2 pr-3 text-right tabular-nums">
-                          {posts.reduce((n, p) => n + p.likedBy.length, 0)}
-                        </td>
-                        <td className="py-2 text-right">
-                          <div className="flex justify-end gap-1.5">
-                            <button
-                              onClick={() => setOpenMember(open ? null : u.email)}
-                              className={btn}
-                            >
-                              {open ? "Close" : "Details"}
+                    <div className="flex flex-wrap items-center gap-2 border-b-[0.5px] border-field px-4 py-2.5">
+                      <button
+                        onClick={() =>
+                          setSelected((s) => {
+                            const next = new Set(s);
+                            const allSelected = pagePosts.every((p) => next.has(p.id));
+                            for (const p of pagePosts) {
+                              if (allSelected) next.delete(p.id);
+                              else next.add(p.id);
+                            }
+                            return next;
+                          })
+                        }
+                        className={btn}
+                      >
+                        {pagePosts.every((p) => selected.has(p.id)) && pagePosts.length
+                          ? "Unselect page"
+                          : "Select page"}
+                      </button>
+                      {selected.size > 0 ? (
+                        <>
+                          <span className="text-[11px] tabular-nums text-mut">
+                            {selected.size} selected
+                          </span>
+                          <span className="ml-auto flex gap-2">
+                            <button onClick={bulkDeletePosts} className={btnDanger}>
+                              Delete selected
                             </button>
-                            <button onClick={() => adminRename(u)} className={btn}>
-                              Rename
+                            <button onClick={() => setSelected(new Set())} className={btn}>
+                              Clear
                             </button>
-                            <button
-                              onClick={() => adminSetMuted(u, !u.muted)}
-                              className={u.muted ? btn : btnDanger}
-                            >
-                              {u.muted ? "Unmute" : "Mute"}
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                      {open && (
-                        <tr>
-                          <td colSpan={7} className="pb-3 pt-1">
-                            <MemberDetail
-                              u={u}
-                              data={data}
-                              live={m.live}
-                              onDeletePost={adminDeletePost}
-                            />
-                          </td>
-                        </tr>
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-[11px] text-dim">
+                          {sortedPosts.length.toLocaleString()} matching post
+                          {sortedPosts.length === 1 ? "" : "s"}
+                        </span>
                       )}
-                    </Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <p className="mt-3 text-[10px] leading-relaxed text-dim">
-            “Joined” self-heals when each member next opens the app. Muting is enforced by
-            security rules — a muted member physically can&apos;t write posts or comments.
-            Deleting a member&apos;s login requires the Firebase console (Authentication → Users).
-          </p>
-            </Section>
-          )}
+                    </div>
 
-          {tab === "moderation" && (
-            <>
-              <Section title={`Posts (${m.live.length})`}>
-          <div className="mb-3 flex gap-2">
-            <input
-              value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                setPage(0);
-              }}
-              placeholder="Search caption or user…"
-              className={`min-w-0 flex-1 ${inputCls}`}
-            />
-            <select
-              value={sort}
-              onChange={(e) => {
-                setSort(e.target.value as typeof sort);
-                setPage(0);
-              }}
-              className="rounded-lg border-[0.5px] border-edge bg-card px-2 py-2 text-xs outline-none"
-            >
-              <option value="new">Newest</option>
-              <option value="liked">Most liked</option>
-              <option value="commented">Most commented</option>
-            </select>
-          </div>
+                    {pagePosts.length === 0 ? (
+                      <div className="p-4">
+                        <Empty>No posts match that search.</Empty>
+                      </div>
+                    ) : (
+                      pagePosts.map((p) => (
+                        <Row
+                          key={p.id}
+                          lead={
+                            <>
+                              <Checkbox
+                                label="Select post"
+                                checked={selected.has(p.id)}
+                                onChange={(on) =>
+                                  setSelected((s) => {
+                                    const next = new Set(s);
+                                    if (on) next.add(p.id);
+                                    else next.delete(p.id);
+                                    return next;
+                                  })
+                                }
+                              />
+                              {p.imagePath ? (
+                                <Thumb path={p.imagePath} />
+                              ) : (
+                                <div className="h-11 w-11 shrink-0 rounded-lg bg-field" />
+                              )}
+                            </>
+                          }
+                          title={
+                            <span className="block truncate">
+                              <span className="font-semibold">{p.username || "Anonymous"}</span>
+                              {p.caption && <span className="text-body"> — {p.caption}</span>}
+                            </span>
+                          }
+                          meta={
+                            <>
+                              {fmtDateTime(p.timestamp)} · ♥ {p.likedBy.length} · 💬{" "}
+                              {m.commentsByPost.get(p.id) ?? 0}
+                              {!p.imageWidth && " · no dims"}
+                            </>
+                          }
+                          actions={postRowActions(p)}
+                        />
+                      ))
+                    )}
+                    <Pagination
+                      page={page}
+                      perPage={PER_PAGE}
+                      total={sortedPosts.length}
+                      onPage={setPage}
+                    />
+                  </Section>
+                )}
 
-          <div className="mb-2 flex flex-wrap items-center gap-2">
-            <button
-              onClick={() =>
-                setSelected((s) => {
-                  const next = new Set(s);
-                  const allSelected = pagePosts.every((p) => next.has(p.id));
-                  for (const p of pagePosts) {
-                    if (allSelected) next.delete(p.id);
-                    else next.add(p.id);
-                  }
-                  return next;
-                })
-              }
-              className={btn}
-            >
-              {pagePosts.every((p) => selected.has(p.id)) && pagePosts.length
-                ? "Unselect page"
-                : "Select page"}
-            </button>
-            {selected.size > 0 && (
+                {modView === "trash" && (
+                  <Section
+                    title="Deleted posts"
+                    count={m.trashed.length}
+                    desc="Posts members removed from Settings (or an admin archived). Hidden everywhere in the app but never destroyed — Recover puts one back in the feed exactly as it was; Delete forever actually erases it."
+                    flush
+                  >
+                    {m.trashed.length === 0 ? (
+                      <div className="p-4">
+                        <Empty>Trash is empty.</Empty>
+                      </div>
+                    ) : (
+                      m.trashed.map((p) => (
+                        <Row
+                          key={p.id}
+                          lead={
+                            p.imagePath ? (
+                              <Thumb path={p.imagePath} />
+                            ) : (
+                              <div className="h-11 w-11 shrink-0 rounded-lg bg-field" />
+                            )
+                          }
+                          title={
+                            <span className="block truncate">
+                              <span className="font-semibold">{p.username || "Anonymous"}</span>
+                              {p.caption && <span className="text-body"> — {p.caption}</span>}
+                            </span>
+                          }
+                          meta={
+                            <>
+                              posted {fmtDateTime(p.timestamp)} · deleted{" "}
+                              {fmtDateTime(p.deletedAt ?? null)} · ♥ {p.likedBy.length}
+                            </>
+                          }
+                          actions={
+                            <>
+                              <button onClick={() => adminRecoverPost(p)} className={btn}>
+                                Recover
+                              </button>
+                              <button onClick={() => adminDeletePost(p)} className={btnDanger}>
+                                Delete forever
+                              </button>
+                            </>
+                          }
+                        />
+                      ))
+                    )}
+                  </Section>
+                )}
+
+                {modView === "comments" && (
+                  <Section title="Comments" count={data.comments.length} flush>
+                    <div className="flex flex-col gap-2 border-b-[0.5px] border-field px-4 py-3 sm:flex-row sm:items-center">
+                      <SearchInput
+                        value={cSearch}
+                        onChange={(v) => {
+                          setCSearch(v);
+                          setCPage(0);
+                        }}
+                        placeholder="Search comment text or member…"
+                      />
+                    </div>
+                    {pageComments.length === 0 ? (
+                      <div className="p-4">
+                        <Empty>No comments match that search.</Empty>
+                      </div>
+                    ) : (
+                      pageComments.map((c) => (
+                        <Row
+                          key={`${c.postId}-${c.id}`}
+                          title={
+                            <span className="block truncate">
+                              <span className="font-semibold">{c.username}</span>{" "}
+                              <span className="text-body">{c.text}</span>
+                            </span>
+                          }
+                          meta={fmtDateTime(c.timestamp)}
+                          actions={
+                            <>
+                              <span className="hidden sm:block">
+                                <Link href={`/p/${c.postId}`} target="_blank" className={btn}>
+                                  Open
+                                </Link>
+                              </span>
+                              <button onClick={() => adminDeleteComment(c)} className={btnDanger}>
+                                Delete
+                              </button>
+                            </>
+                          }
+                        />
+                      ))
+                    )}
+                    <Pagination
+                      page={cPage}
+                      perPage={C_PER_PAGE}
+                      total={filteredComments.length}
+                      onPage={setCPage}
+                    />
+                  </Section>
+                )}
+              </>
+            )}
+
+            {/* ------------------------------- broadcast ------------------------------- */}
+            {tab === "broadcast" && (
+              <div className="grid items-start gap-4 xl:grid-cols-2">
+                <BroadcastComposer
+                  deviceCount={data.subs.length}
+                  onSent={(message, result, test) => {
+                    if (!test) log("broadcast-push", `“${message.slice(0, 100)}” — ${result}`);
+                  }}
+                />
+                <AnnouncementManager
+                  key={data.announcement?.updatedAt?.getTime() ?? "none"}
+                  initial={data.announcement}
+                  onSave={saveAnnouncement}
+                />
+              </div>
+            )}
+
+            {/* --------------------------------- system -------------------------------- */}
+            {tab === "system" && (
               <>
-                <button onClick={bulkDeletePosts} className={btnDanger}>
-                  Delete {selected.size} selected
-                </button>
-                <button onClick={() => setSelected(new Set())} className={btn}>
-                  Clear
-                </button>
+                <SecurityPanel user={user} unlockedAt={unlockedAt} onLock={lock} />
+
+                <Section
+                  title="Data health"
+                  desc="Rows the app can't show and records it can't resolve. Sweeping is permanent."
+                  right={
+                    <>
+                      {m.fixableUids.length > 0 && (
+                        <button onClick={backfillUids} className={btn}>
+                          Backfill {m.fixableUids.length} uid
+                          {m.fixableUids.length === 1 ? "" : "s"}
+                        </button>
+                      )}
+                      {m.dead.length > 0 && (
+                        <button onClick={sweepDeadDocs} className={btnDanger}>
+                          Delete {m.dead.length} dead docs
+                        </button>
+                      )}
+                      {m.orphanComments.length > 0 && (
+                        <button onClick={sweepOrphanComments} className={btnDanger}>
+                          Delete {m.orphanComments.length} orphans
+                        </button>
+                      )}
+                    </>
+                  }
+                >
+                  <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 xl:grid-cols-4">
+                    <Stat
+                      label="Dead photo docs"
+                      value={m.dead.length}
+                      sub="no timestamp/image — never render"
+                      tone={m.dead.length ? "red" : undefined}
+                    />
+                    <Stat
+                      label="Orphaned comments"
+                      value={m.orphanComments.length}
+                      sub="parent post deleted"
+                      tone={m.orphanComments.length ? "red" : undefined}
+                    />
+                    <Stat
+                      label="Posts w/o dims"
+                      value={m.noDims}
+                      sub="feed can't reserve space"
+                      tone={m.noDims ? "gold" : undefined}
+                    />
+                    <Stat
+                      label="Ghost likes"
+                      value={m.ghostLikes}
+                      sub="from uids with no known name"
+                    />
+                    <Stat label="Total photo docs" value={data.photos.length} />
+                    <Stat label="Total comment docs" value={data.comments.length} />
+                    <Stat
+                      label="Users missing uid"
+                      value={m.missingUids.length}
+                      sub={
+                        m.missingUids.length
+                          ? `${m.fixableUids.length} recoverable`
+                          : "everyone resolvable"
+                      }
+                      tone={m.missingUids.length ? "gold" : undefined}
+                    />
+                    <Stat label="Muted members" value={mutedCount} />
+                  </div>
+                  {m.missingUids.length > 0 && (
+                    <>
+                      <Rule label="Members missing a uid" />
+                      <div className="flex flex-col gap-1">
+                        {m.missingUids.map((r) => (
+                          <p key={r.user.email} className="text-[11.5px] text-mut">
+                            <span className="font-semibold text-white">{r.user.username}</span>{" "}
+                            <span className="text-dim">{r.user.email}</span>{" "}
+                            {r.uid ? (
+                              <span className={r.conflict ? "text-warn" : "text-ok"}>
+                                → {r.uid.slice(0, 10)}… via {r.source}
+                                {r.conflict && " (sources disagree — verify first)"}
+                              </span>
+                            ) : (
+                              <span className="text-dim">
+                                → no source; they must sign in once, or add it by hand
+                              </span>
+                            )}
+                          </p>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </Section>
+
+                <Section
+                  title="Push devices"
+                  count={data.subs.length}
+                  desc={`${subsByUid.size} member${subsByUid.size === 1 ? "" : "s"} with notifications enabled.`}
+                  flush
+                >
+                  {data.subs.length === 0 ? (
+                    <div className="p-4">
+                      <Empty>No devices enabled yet.</Empty>
+                    </div>
+                  ) : (
+                    [...subsByUid.entries()].map(([uid, subs]) =>
+                      subs.map((s, i) => (
+                        <Row
+                          key={s.id}
+                          title={
+                            <span className="block truncate">
+                              <span className="font-semibold">
+                                {m.nameOf(uid === "unknown" ? null : uid)}
+                              </span>
+                              <span className="ml-1.5 text-dim">device {i + 1}</span>
+                            </span>
+                          }
+                          meta={
+                            <>
+                              {new URL(s.endpoint).hostname} · updated {fmtDate(s.updatedAt)}
+                            </>
+                          }
+                          actions={
+                            <button onClick={() => adminDeleteSub(s)} className={btnDanger}>
+                              Remove
+                            </button>
+                          }
+                        />
+                      ))
+                    )
+                  )}
+                </Section>
+
+                <Section
+                  title="Audit log"
+                  count={data.log.length}
+                  desc="Append-only. Every delete, rename, mute, broadcast and announcement lands here — it can't be edited or cleared, even by you."
+                  flush
+                >
+                  {data.log.length === 0 ? (
+                    <div className="p-4">
+                      <Empty>No admin actions recorded yet.</Empty>
+                    </div>
+                  ) : (
+                    data.log.slice(0, 100).map((entry) => (
+                      <Row
+                        key={entry.id}
+                        align="start"
+                        title={
+                          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <span className="rounded border-[0.5px] border-edge bg-white/[0.04] px-1.5 py-0.5 font-mono text-[10.5px] text-body">
+                              {entry.action}
+                            </span>
+                            <span className="min-w-0 break-words text-mut">{entry.detail}</span>
+                          </span>
+                        }
+                        meta={fmtDateTime(entry.at)}
+                      />
+                    ))
+                  )}
+                  {data.log.length > 100 && (
+                    <p className="border-t-[0.5px] border-field px-4 py-3 text-[10.5px] text-dim">
+                      Showing the 100 most recent of {data.log.length} entries.
+                    </p>
+                  )}
+                </Section>
+
+                <p className="px-1 text-[10.5px] leading-relaxed text-dim">
+                  Access is enforced by the server, not just this page: only admin accounts can
+                  read this data, and admin changes (deletes, renames, mutes, announcements) are
+                  rejected unless your password was re-entered in the last 15 minutes.
+                </p>
               </>
             )}
           </div>
-
-          <div className="flex flex-col">
-            {pagePosts.map((p) => (
-              <div key={p.id} className="flex items-center gap-3 border-t-[0.5px] border-field py-2.5">
-                <input
-                  type="checkbox"
-                  checked={selected.has(p.id)}
-                  onChange={(e) =>
-                    setSelected((s) => {
-                      const next = new Set(s);
-                      if (e.target.checked) next.add(p.id);
-                      else next.delete(p.id);
-                      return next;
-                    })
-                  }
-                  className="h-4 w-4 shrink-0 accent-white"
-                />
-                {p.imagePath && <Thumb path={p.imagePath} />}
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs">
-                    <span className="font-bold">{p.username || "Anonymous"}</span>
-                    {p.caption && <span className="text-mut"> — {p.caption}</span>}
-                  </p>
-                  <p className="text-[10px] text-dim">
-                    {fmtDateTime(p.timestamp)} · ♥ {p.likedBy.length} · 💬{" "}
-                    {m.commentsByPost.get(p.id) ?? 0}
-                    {!p.imageWidth && " · no dims"}
-                  </p>
-                </div>
-                <button onClick={() => adminDeletePost(p)} className={btnDanger}>
-                  Delete
-                </button>
-              </div>
-            ))}
-          </div>
-
-          {sortedPosts.length > PER_PAGE && (
-            <div className="mt-3 flex items-center justify-between text-xs text-mut">
-              <button disabled={page === 0} onClick={() => setPage((p) => p - 1)} className={btn}>
-                Prev
-              </button>
-              <span className="tabular-nums">
-                {page + 1} / {Math.ceil(sortedPosts.length / PER_PAGE)}
-              </span>
-              <button
-                disabled={(page + 1) * PER_PAGE >= sortedPosts.length}
-                onClick={() => setPage((p) => p + 1)}
-                className={btn}
-              >
-                Next
-              </button>
-            </div>
-          )}
-        </Section>
-
-        <Section title={`Deleted posts (${m.trashed.length})`}>
-          <p className="mb-3 text-[11px] leading-relaxed text-dim">
-            Posts members removed from Settings (or an admin archived). Hidden
-            everywhere in the app but never destroyed — recover puts one back
-            in the feed exactly as it was; Delete forever actually erases it.
-          </p>
-          <div className="flex flex-col">
-            {m.trashed.map((p) => (
-              <div key={p.id} className="flex items-center gap-3 border-t-[0.5px] border-field py-2.5">
-                {p.imagePath && <Thumb path={p.imagePath} />}
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs">
-                    <span className="font-bold">{p.username || "Anonymous"}</span>
-                    {p.caption && <span className="text-mut"> — {p.caption}</span>}
-                  </p>
-                  <p className="text-[10px] text-dim">
-                    posted {fmtDateTime(p.timestamp)} · deleted {fmtDateTime(p.deletedAt ?? null)} · ♥ {p.likedBy.length}
-                  </p>
-                </div>
-                <button onClick={() => adminRecoverPost(p)} className={btn}>
-                  Recover
-                </button>
-                <button onClick={() => adminDeletePost(p)} className={btnDanger}>
-                  Delete forever
-                </button>
-              </div>
-            ))}
-            {m.trashed.length === 0 && <p className="text-xs text-dim">Trash is empty.</p>}
-          </div>
-        </Section>
-
-        <Section title={`Comments (${data.comments.length})`}>
-          <input
-            value={cSearch}
-            onChange={(e) => {
-              setCSearch(e.target.value);
-              setCPage(0);
-            }}
-            placeholder="Search comment text or user…"
-            className={`mb-3 w-full ${inputCls}`}
-          />
-          <div className="flex flex-col">
-            {pageComments.map((c) => (
-              <div key={`${c.postId}-${c.id}`} className="flex items-center gap-3 border-t-[0.5px] border-field py-2">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs">
-                    <span className="font-bold">{c.username}</span>{" "}
-                    <span className="text-mut">{c.text}</span>
-                  </p>
-                  <p className="text-[10px] text-dim">{fmtDateTime(c.timestamp)}</p>
-                </div>
-                <button onClick={() => adminDeleteComment(c)} className={btnDanger}>
-                  Delete
-                </button>
-              </div>
-            ))}
-            {pageComments.length === 0 && <p className="text-xs text-dim">No matches.</p>}
-          </div>
-          {filteredComments.length > C_PER_PAGE && (
-            <div className="mt-3 flex items-center justify-between text-xs text-mut">
-              <button disabled={cPage === 0} onClick={() => setCPage((p) => p - 1)} className={btn}>
-                Prev
-              </button>
-              <span className="tabular-nums">
-                {cPage + 1} / {Math.ceil(filteredComments.length / C_PER_PAGE)}
-              </span>
-              <button
-                disabled={(cPage + 1) * C_PER_PAGE >= filteredComments.length}
-                onClick={() => setCPage((p) => p + 1)}
-                className={btn}
-              >
-                Next
-              </button>
-            </div>
-          )}
-              </Section>
-            </>
-          )}
-
-          {tab === "system" && (
-            <>
-              <Section title={`Push devices (${data.subs.length})`}>
-          <div className="flex flex-col">
-            {[...subsByUid.entries()].map(([uid, subs]) =>
-              subs.map((s, i) => (
-                <div key={s.id} className="flex items-center gap-3 border-t-[0.5px] border-field py-2">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-bold">
-                      {m.nameOf(uid === "unknown" ? null : uid)}
-                      <span className="ml-1.5 font-normal text-dim">device {i + 1}</span>
-                    </p>
-                    <p className="truncate text-[10px] text-dim">
-                      {new URL(s.endpoint).hostname} · updated {fmtDate(s.updatedAt)}
-                    </p>
-                  </div>
-                  <button onClick={() => adminDeleteSub(s)} className={btnDanger}>
-                    Remove
-                  </button>
-                </div>
-              ))
-            )}
-            {data.subs.length === 0 && <p className="text-xs text-dim">No devices enabled yet.</p>}
-          </div>
-        </Section>
-
-        <Section title="Data health">
-          <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
-            <Stat label="Dead photo docs" value={m.dead.length} sub="no timestamp/image — never render" />
-            <Stat label="Orphaned comments" value={m.orphanComments.length} sub="parent post deleted" />
-            <Stat label="Posts w/o dims" value={m.noDims} sub="feed can't reserve space" />
-            <Stat label="Ghost likes" value={m.ghostLikes} sub="from uids with no known name" />
-            <Stat label="Total photo docs" value={data.photos.length} />
-            <Stat label="Total comment docs" value={data.comments.length} />
-          </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {m.dead.length > 0 && (
-              <button onClick={sweepDeadDocs} className={btnDanger}>
-                Delete all {m.dead.length} dead docs
-              </button>
-            )}
-            {m.orphanComments.length > 0 && (
-              <button onClick={sweepOrphanComments} className={btnDanger}>
-                Delete {m.orphanComments.length} orphaned comments
-              </button>
-            )}
-          </div>
-        </Section>
-
-        <Section title={`Audit log (${data.log.length})`}>
-          <div className="flex flex-col">
-            {data.log.slice(0, 100).map((entry) => (
-              <div key={entry.id} className="border-t-[0.5px] border-field py-2">
-                <p className="text-xs">
-                  <span className="font-bold">{entry.action}</span>{" "}
-                  <span className="text-mut">{entry.detail}</span>
-                </p>
-                <p className="text-[10px] text-dim">{fmtDateTime(entry.at)}</p>
-              </div>
-            ))}
-            {data.log.length === 0 && (
-              <p className="text-xs text-dim">
-                No admin actions recorded yet. Every delete, rename, mute, broadcast and
-                announcement lands here — the log is append-only and can&apos;t be edited or
-                cleared, even by you.
-              </p>
-            )}
-          </div>
-              </Section>
-
-              <p className="px-1 pt-1 text-[10px] leading-relaxed text-dim">
-                Access is enforced by Firebase custom claims and Firestore security rules, not
-                just this page. Admin mutations (deletes, renames, mutes, announcements) are
-                rejected server-side unless your password was re-entered in the last 15 minutes.
-                Every admin action is written to an append-only audit log.
-              </p>
-            </>
-          )}
-        </div>
-      </main>
+        </main>
+      </div>
     </>
   );
 }

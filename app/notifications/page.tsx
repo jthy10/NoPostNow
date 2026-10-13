@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import type { Timestamp } from "firebase/firestore";
+import type { Timestamp } from "@/lib/store";
 import { useAuth } from "@/lib/auth-context";
 import {
   useNotifications,
@@ -12,7 +12,6 @@ import {
   timeAgo,
   type NotificationItem,
 } from "@/lib/notifications";
-import { useUnreadThreadCount } from "@/lib/dms";
 import { useBlockSets } from "@/lib/blocks";
 import { useNamesByUid } from "@/lib/users";
 import Avatar from "@/components/Avatar";
@@ -83,7 +82,6 @@ export default function NotificationsPage() {
   const router = useRouter();
   const [max, setMax] = useState(PAGE);
   const items = useNotifications(user?.uid, max);
-  const unreadDms = useUnreadThreadCount(user?.uid);
   const { hidden } = useBlockSets(user?.uid);
   const names = useNamesByUid();
   const [capturedFile, setCapturedFile] = useState<File | null>(null);
@@ -141,7 +139,7 @@ export default function NotificationsPage() {
     <>
       <ViewportShell>
       <PageHeader
-        backHref="/feed"
+        backHref="/"
         title="Notifications"
         right={
           <>
@@ -164,11 +162,9 @@ export default function NotificationsPage() {
               </svg>
             </Link>
             <Link
-              href="/dm"
-              aria-label={
-                unreadDms > 0 ? `Messages, ${unreadDms} unread` : "Messages"
-              }
-              className="relative p-1.5 text-white transition-opacity active:opacity-60"
+              href="/browse"
+              aria-label="Browse the archive"
+              className="p-1.5 text-white transition-opacity active:opacity-60"
             >
               <svg
                 viewBox="0 0 24 24"
@@ -179,13 +175,11 @@ export default function NotificationsPage() {
                 strokeLinecap="round"
                 strokeLinejoin="round"
               >
-                <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+                <rect x="3" y="3" width="7" height="7" rx="1" />
+                <rect x="14" y="3" width="7" height="7" rx="1" />
+                <rect x="3" y="14" width="7" height="7" rx="1" />
+                <rect x="14" y="14" width="7" height="7" rx="1" />
               </svg>
-              {unreadDms > 0 && (
-                <span className="absolute -right-0.5 -top-0.5 flex h-[17px] min-w-[17px] items-center justify-center rounded-full bg-heart px-1 text-[10px] font-extrabold leading-none text-white">
-                  {unreadDms > 99 ? "99+" : unreadDms}
-                </span>
-              )}
             </Link>
           </>
         }
@@ -259,9 +253,9 @@ export default function NotificationsPage() {
             {isNew(n) && (
               <span className="h-2 w-2 shrink-0 rounded-full bg-heart" aria-label="New" />
             )}
-            {(n.type === "like" || n.type === "commentLike") && (
-              <PostThumb postId={n.postId} />
-            )}
+            {/* Every notification is about a post, so every row previews it —
+                not just the likes. */}
+            <PostThumb postId={n.postId} />
           </div>
           );
         })}
@@ -288,7 +282,7 @@ export default function NotificationsPage() {
           onClose={() => setCapturedFile(null)}
           onPosted={() => {
             setCapturedFile(null);
-            router.push("/feed");
+            router.push("/");
           }}
         />
       )}

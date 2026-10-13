@@ -7,22 +7,22 @@ Thank you for helping improve NoPostNow.
 - Search existing issues and pull requests.
 - Discuss large behavior, data-model, or dependency changes in an issue first.
 - Report security vulnerabilities privately as described in `SECURITY.md`.
-- Do not submit secrets, private user data, generated Firebase state, or
-  production database exports.
+- Do not submit secrets, private user data, or anything from a real site's
+  data folder.
 
 ## Development
 
 1. Fork the repository and create a focused branch.
 2. Run `npm install`.
-3. Copy `.env.example` to `.env.local` or run `npm run setup:firebase`.
-4. Use a disposable Firebase development project, not production.
-5. Make the smallest coherent change and add documentation where needed.
-6. Run `npm run check`.
+3. Run `npm run setup` to create a local test site, then `npm run dev`.
+   Use a throwaway data folder, never a real site's.
+4. Make the smallest coherent change and add documentation where needed.
+5. Run `npm run check`.
 
 ## Pull requests
 
 Explain what changed, why it changed, how it was tested, and any security,
-privacy, rules, index, or migration impact. Screenshots are useful for visual
+privacy, access-rule, or data-format impact. Screenshots are useful for visual
 changes, but remove personal information first.
 
 By contributing, you agree that your contribution is licensed under the MIT

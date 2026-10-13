@@ -1,167 +1,133 @@
 # NoPostNow
 
 [![CI](https://github.com/jthy10/nopostnow/actions/workflows/ci.yml/badge.svg)](https://github.com/jthy10/nopostnow/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/jthy10/nopostnow/actions/workflows/codeql.yml/badge.svg)](https://github.com/jthy10/nopostnow/actions/workflows/codeql.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-NoPostNow is an open-source, private photo feed for trusted circles. It has no
-algorithmic feed, advertising, or public account discovery. The project is
-built with Next.js, React, and Firebase and is designed to be self-hosted.
+A private photo feed for you and your friends, running on a computer you own.
 
-## Features
+No algorithm, no ads, no strangers, and no cloud account to sign up for. One
+command sets it up; your photos stay in a folder you choose.
 
-- Member-only photo sharing, likes, comments, mentions, and direct messages
-- Installable progressive web app with optional web push notifications
-- Administrator tools protected by Firebase custom claims and recent MFA
-- Strict Firestore and Storage rules with owner- and role-based access
-- Server-verified notification endpoints that do not trust client identities
-- Branded, scanner-safe email confirmation through an authenticated sender
-- Responsive, mobile-first interface
+## What you get
 
-## Requirements
+- One shared, chronological feed: photos, captions, likes, comments, @mentions
+- Direct messages, a notification bell, and push notifications
+- Installs to a phone's Home Screen like an app (no app store)
+- Profiles with posting streaks and a likes podium
+- Blocking, data export, and account deletion for every member
+- An admin console: invites, moderation, announcements, stats, and a private
+  line between members and the admins
+- An optional "daily moment" — a reminder at a time you pick, with a badge for
+  photos posted on that exact minute
+- Your own name and accent colour
 
-- Node.js 20.9 or newer
-- A Firebase project with a Web app, Authentication, Firestore, and Storage
-- Firebase CLI access to that project
-- A transactional email provider for branded verification messages
-- Application Default Credentials for server routes, Vercel OIDC federation,
-  or a service account stored only in your hosting provider's secret manager
+## Quick start
 
-## Local setup
+You need a computer that stays on (a spare PC, a mini PC, a home server) with
+Linux, macOS or Windows. [Download the code](https://github.com/jthy10/nopostnow/archive/refs/heads/main.zip)
+or clone it, then run the launcher from that folder:
 
-1. Install dependencies:
-
-   ```bash
-   npm install
-   ```
-
-2. Authenticate the Firebase CLI and select your project:
-
-   ```bash
-   npx firebase login
-   npx firebase use --add
-   ```
-
-3. Generate `.env.local` from the selected Firebase Web app:
-
-   ```bash
-   npm run setup:firebase -- YOUR_PROJECT_ID https://your-domain.example
-   ```
-
-   The generated file is ignored by Git. Do not commit it.
-
-4. Supply Firebase Admin credentials. On Google-hosted runtimes, prefer
-   Application Default Credentials. For local development:
-
-   ```bash
-   gcloud auth application-default login
-   ```
-
-   For non-Google hosting, set `FIREBASE_SERVICE_ACCOUNT_JSON` as a protected
-   platform secret, never as a committed file or a public environment variable.
-
-5. Deploy the security rules:
-
-   ```bash
-   npm run firebase:deploy
-   ```
-
-6. Allow your app origins to fetch authenticated Storage blobs. Edit
-   `storage.cors.json` for your domains, then apply it with the Google Cloud
-   CLI:
-
-   ```bash
-   gcloud storage buckets update gs://YOUR_STORAGE_BUCKET --cors-file=storage.cors.json
-   ```
-
-   CORS does not make objects public; Firebase Storage rules and the member's
-   verified session still authorize every request.
-
-7. Start the app:
-
-   ```bash
-   npm run dev
-   ```
-
-For branded verification email, verify a dedicated sending subdomain such as
-`auth.example.com` with Resend, publish the provider's SPF and DKIM records plus
-a DMARC policy, and set `APP_ORIGIN`, `RESEND_API_KEY`, and `AUTH_EMAIL_FROM`.
-Keep open and click tracking disabled for authentication email. If these
-variables are absent, the app falls back to Firebase's standard verification
-message so users are not stranded.
-
-## Account and administrator management
-
-Public users register with email and password in the app. They must verify their
-email before Firestore, Storage, the feed, or authenticated API routes will
-accept their session. Branded verification messages link to a short
-`/verify/{token}` page that requires an explicit confirmation click, preventing
-mail scanners from consuming one-time actions. Password reset and legacy
-Firebase actions remain handled by the branded `/auth/action` route.
-
-The command below is only for bootstrapping an administrator from a trusted
-environment with Firebase Admin credentials:
+**Linux / macOS**
 
 ```bash
-$env:USER_EMAIL="member@example.com"
-$env:USER_NAME="Member Name"
-$env:USER_PASSWORD="a-long-unique-password"
-npm run users -- create
+sh nopostnow.sh
 ```
 
-Set `$env:USER_ADMIN="true"` to create or grant an administrator. Existing
-accounts can be enabled and assigned the requested role with
-`npm run users -- grant`, and disabled with `npm run users -- revoke`. Users
-must sign in again after an administrator role change so their ID token includes
-the new claim.
+**Windows** — double-click `nopostnow.cmd`, or in a terminal:
 
-## Production configuration
+```
+.\nopostnow.cmd
+```
 
-Copy the variable names in [`.env.example`](.env.example) into the hosting
-platform's environment settings. Values prefixed with `NEXT_PUBLIC_` are
-Firebase client configuration and are intentionally public; server credentials,
-VAPID private keys, and cron secrets must remain protected.
+A control panel opens. The first time, it asks a few questions — the site's
+name and colour, where the photos are stored, the address and port, and your
+admin account — then starts the site. After that the panel shows your site's
+addresses on the left and its live console on the right, with **Options** for
+changing anything later, and buttons for invite and password-reset links.
 
-For Vercel, prefer its [Google Cloud OIDC
-integration](https://vercel.com/docs/oidc/gcp) and configure the four `GCP_*`
-variables in `.env.example`. This exchanges the deployment identity for
-short-lived Google credentials and avoids storing a Firebase private key.
+If Node.js isn't installed, the launcher downloads an official copy into the
+folder for its own use. Nothing else is needed: the panel is a local page
+served by Node itself, reachable only from the same computer.
 
-Administrator mutations require a recent Firebase sign-in and TOTP second
-factor by default. Keep `REQUIRE_ADMIN_MFA=true` in production. The scheduled
-daily prompt endpoint expects `Authorization: Bearer <CRON_SECRET>`.
+On a machine with no screen (a server you reach over SSH), the launcher uses
+a terminal wizard instead. You can also ask for that with `sh nopostnow.sh start`.
 
-## Security model
-
-NoPostNow uses a defense-in-depth model:
-
-- Authentication requires a verified email. Public signup never grants
-  administrator access.
-- Social profiles are UID-keyed and exclude email addresses; email-keyed account
-  records are readable only by their owner and administrators.
-- Firestore and Storage rules validate ownership, roles, shapes, sizes, and
-  permitted paths.
-- Privileged API routes verify Firebase ID tokens with revocation checks.
-- Administrator writes require an `admin` claim, a recent sign-in, and MFA.
-- Push subscriptions and notification preferences are private to their owner.
-- Security headers include CSP, HSTS, clickjacking protection, MIME sniffing
-  protection, and a restrictive permissions policy.
-
-See [SECURITY.md](SECURITY.md) before reporting a vulnerability. Never place
-credentials, private user content, or exploit details in a public issue.
-
-## Quality checks
+Already have Node.js 22.18 or newer? The same thing by hand:
 
 ```bash
-npm run check
+npm ci
+npm run panel        # or, in the terminal only: npm run setup && npm start
 ```
 
-This runs ESLint, TypeScript, and a production build. Pull requests also run
-GitHub dependency review and CodeQL analysis.
+Then open the address it prints (by default <http://localhost:3000>).
 
-## Contributing
+## Getting it online
 
-Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and the
+Out of the box the site is reachable from your own network. To let friends in
+from anywhere — and to let phones install it and receive notifications — it
+needs a public `https://` address. Two ways need no router changes: a free
+Cloudflare Tunnel on your own domain, or a NoPostNow relay, which gives your
+site an address without you owning a domain at all.
+**[docs/GOING-ONLINE.md](docs/GOING-ONLINE.md)** has step-by-step instructions.
+
+## Day to day
+
+| Task | Command |
+| --- | --- |
+| Start the site | `sh nopostnow.sh` (control panel) or `sh nopostnow.sh start` (terminal) |
+| Change the name, port, address, data folder… | **Options** in the panel, or `sh nopostnow.sh setup` |
+| List accounts | `npm run users -- list` |
+| Make an invite link | The panel, Admin → Members, or `npm run users -- invite` |
+| Someone forgot their password | The panel, Admin → Members, or `npm run users -- reset their@email` |
+| Locked out of the only admin account | `npm run users -- reset your@email` |
+
+The site sends no email. Invites and password resets are links that you pass
+along yourself.
+
+### Backups
+
+Everything — photos, accounts, settings — is in the data folder you chose
+during setup (`data/` by default). Copy that folder somewhere safe on a
+schedule. To move to a new machine, copy the folder across and point setup at
+it.
+
+### Updating
+
+Get the new code (`git pull`, or download and replace the files, keeping your
+data folder), run `npm ci`, and start it again. The site rebuilds itself the
+first time a new version starts.
+
+## How it works
+
+NoPostNow is a [Next.js](https://nextjs.org) app with its own small server
+side. There are no outside services:
+
+- **Data** — one SQLite file (`nopostnow.db`), using the SQLite built into
+  Node.js. Nothing to install or administer.
+- **Photos** — plain files under `files/` in the data folder, served only to
+  signed-in members.
+- **Accounts** — email and password, stored as scrypt hashes, with cookie
+  sessions and optional authenticator-app two-factor sign-in.
+- **Access control** — every read and write is checked on the server by
+  [`server/rules.ts`](server/rules.ts).
+- **Settings** — `config.json` in the data folder, written by the control
+  panel or the setup wizard.
+- **Relay** (optional) — [`relay/`](relay) holds a small server that gives
+  home-hosted sites a public address, and the connector a site uses to attach
+  to one. See [docs/RELAY.md](docs/RELAY.md) if you want to run a relay.
+
+See [SECURITY.md](SECURITY.md) for the security model and advice for hosts.
+
+## Development
+
+```bash
+npm ci
+npm run setup   # create a local test site
+npm run dev     # run with live reload
+npm run check   # lint, typecheck, tests, production build
+```
+
+Contributions are welcome — read [CONTRIBUTING.md](CONTRIBUTING.md) and the
 [Code of Conduct](CODE_OF_CONDUCT.md) first.
 
 ## License

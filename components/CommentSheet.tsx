@@ -19,6 +19,7 @@ import {
 } from "@/lib/sheet";
 import { notifyComment, notifyMention, notifyCommentLike } from "@/lib/push";
 import { useBlockSets } from "@/lib/blocks";
+import { useStreaks } from "@/lib/streaks";
 import { useMentionUsers, type MentionCandidate } from "@/lib/users";
 import {
   activeMentionQuery,
@@ -27,6 +28,7 @@ import {
   splitMentions,
 } from "@/lib/mentions";
 import Avatar from "./Avatar";
+import StreakFlame from "./StreakFlame";
 
 const MAX_COMMENT_LENGTH = 200;
 
@@ -59,11 +61,14 @@ export default function CommentSheet({
   // Blocked either way — their comments (and likes) don't render.
   const comments =
     allComments?.filter((c) => !c.userUUID || !hidden.has(c.userUUID)) ?? null;
+  // Days in a row each commenter is on — one tally for the whole thread.
+  const streaks = useStreaks(uid);
   const [tab, setTab] = useState<"comments" | "likes">("comments");
   const [likerUids, setLikerUids] = useState<string[] | null>(null);
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -188,40 +193,40 @@ export default function CommentSheet({
     const trimmed = text.trim();
     if (!trimmed || busy) return;
     setBusy(true);
+    setSendError(null);
     try {
-      const commentId = await addComment(post.id, uid, username, trimmed);
-      // Split the fan-out. @mentioned members get the richer "mentioned you"
-      // ping; the usual thread (poster + everyone who already commented) gets
-      // the generic "commented" one — minus anyone already mentioned, so a
-      // named person is never pinged twice for the same comment. `comments` is
-      // the pre-send, block-filtered list, so blocked users are excluded.
-      const mentionTargets = extractMentionUids(trimmed, mentionUsers).filter(
-        (u) => u !== uid
-      );
-      const mentionSet = new Set(mentionTargets);
-      const participantUids = (comments ?? [])
-        .map((c) => c.userUUID)
-        .filter((u): u is string => Boolean(u))
-        .filter((u) => !mentionSet.has(u));
-      const ownerForComment = mentionSet.has(post.userUUID) ? "" : post.userUUID;
-      if (mentionTargets.length)
-        void notifyMention(username, trimmed, mentionTargets, post.id);
-      void notifyComment(
-        username,
-        trimmed,
-        ownerForComment,
-        post.id,
-        participantUids,
-        commentId,
-      );
-      setText("");
-      setCaret(0);
-      await load();
-      scrollToLatest(true);
-      onChanged?.();
-    } finally {
+      await addComment(post.id, uid, username, trimmed);
+    } catch {
+      // Keep what they typed — retrying is one tap, and swallowing this made a
+      // failed comment look like a sent one.
+      setSendError("Couldn't post that — check your connection and try again.");
       setBusy(false);
+      return;
     }
+
+    // Posted. Everything from here is best-effort follow-up; none of it should
+    // be able to report the comment as failed.
+    //
+    // Split the fan-out. @mentioned members get the richer "mentioned you"
+    // ping; the usual thread (poster + everyone who already commented) gets
+    // the generic "commented" one — minus anyone already mentioned, so a
+    // named person is never pinged twice for the same comment. `comments` is
+    // the pre-send, block-filtered list, so blocked users are excluded.
+    const mentionTargets = extractMentionUids(trimmed, mentionUsers).filter((u) => u !== uid);
+    const mentionSet = new Set(mentionTargets);
+    const participantUids = (comments ?? [])
+      .map((c) => c.userUUID)
+      .filter((u): u is string => Boolean(u))
+      .filter((u) => !mentionSet.has(u));
+    const ownerForComment = mentionSet.has(post.userUUID) ? "" : post.userUUID;
+    if (mentionTargets.length) void notifyMention(username, trimmed, mentionTargets, post.id);
+    void notifyComment(username, trimmed, ownerForComment, post.id, participantUids);
+    setText("");
+    setCaret(0);
+    await load().catch(() => {});
+    scrollToLatest(true);
+    onChanged?.();
+    setBusy(false);
   }
 
   async function handleToggleCommentLike(c: Comment) {
@@ -236,7 +241,7 @@ export default function CommentSheet({
       await toggleCommentLike(post.id, c.id, uid, liked);
       if (!liked && c.userUUID && c.userUUID !== uid && !likeNotified.current.has(c.id)) {
         likeNotified.current.add(c.id);
-        void notifyCommentLike(username, c.userUUID, post.id, c.id);
+        void notifyCommentLike(username, c.userUUID, post.id);
       }
     } catch {
       setAllComments((prev) =>
@@ -246,8 +251,15 @@ export default function CommentSheet({
   }
 
   async function handleDelete(commentId: string) {
-    await deleteComment(post.id, commentId);
-    await load();
+    if (!confirm("Delete this comment?")) return;
+    setSendError(null);
+    try {
+      await deleteComment(post.id, commentId);
+    } catch {
+      setSendError("Couldn't delete that — try again.");
+      return;
+    }
+    await load().catch(() => {});
     onChanged?.();
   }
 
@@ -343,16 +355,16 @@ export default function CommentSheet({
                   <div key={c.id} className="flex items-start gap-2.5">
                     <Avatar username={c.username} className="h-[30px] w-[30px] text-[10px]" />
                     <div className="min-w-0 flex-1">
-                      {c.userUUID ? (
-                        <Link
-                          href={profileHref(c.userUUID)}
-                          className="mb-0.5 block text-xs font-bold"
-                        >
-                          {c.username}
-                        </Link>
-                      ) : (
-                        <p className="mb-0.5 text-xs font-bold">{c.username}</p>
-                      )}
+                      <div className="mb-0.5 flex min-w-0 items-center gap-1.5 text-xs font-bold">
+                        {c.userUUID ? (
+                          <Link href={profileHref(c.userUUID)} className="truncate">
+                            {c.username}
+                          </Link>
+                        ) : (
+                          <span className="truncate">{c.username}</span>
+                        )}
+                        {c.userUUID && <StreakFlame days={streaks.get(c.userUUID) ?? 0} />}
+                      </div>
                       <p className="break-words text-sm leading-[1.45] text-body">
                         {renderBody(c.text)}
                       </p>
@@ -452,6 +464,9 @@ export default function CommentSheet({
                   </button>
                 ))}
               </div>
+            )}
+            {sendError && (
+              <p className="pb-2 text-center text-[11px] text-heart">{sendError}</p>
             )}
             <div className="flex items-center gap-2.5">
               {/* 16px font — anything smaller makes iOS zoom the page on focus.

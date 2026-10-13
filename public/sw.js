@@ -1,13 +1,13 @@
-// NoPostNow service worker: offline-tolerant app shell + push notifications.
-// Only same-origin GETs are handled — Firebase auth/data/photo requests
-// pass straight through untouched (they carry auth and must never be cached).
+// Service worker: offline-tolerant app shell + push notifications.
+// Only pages and static assets are handled — API and photo requests pass
+// straight through untouched (they carry the session and must never be cached).
 const CACHE = "nopostnow-v2";
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches
       .open(CACHE)
-      .then((cache) => cache.addAll(["/feed"]))
+      .then((cache) => cache.addAll(["/"]))
       .then(() => self.skipWaiting())
   );
 });
@@ -36,7 +36,7 @@ self.addEventListener("fetch", (event) => {
           return res;
         })
         .catch(() =>
-          caches.match(request).then((hit) => hit || caches.match("/feed"))
+          caches.match(request).then((hit) => hit || caches.match("/"))
         )
     );
     return;
@@ -69,11 +69,11 @@ self.addEventListener("push", (event) => {
     data = { body: event.data.text() };
   }
   event.waitUntil(
-    self.registration.showNotification(data.title || "NoPostNow", {
+    self.registration.showNotification(data.title || "New activity", {
       body: data.body || "",
       icon: "/icon-192.png",
       badge: "/badge-96.png",
-      data: { url: data.url || "/feed" },
+      data: { url: data.url || "/" },
       // DM pushes share a per-thread tag so a burst of texts collapses into
       // one notification; renotify keeps each new one buzzing anyway.
       ...(data.tag ? { tag: data.tag, renotify: true } : {}),
@@ -86,7 +86,7 @@ self.addEventListener("push", (event) => {
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const url = new URL(
-    (event.notification.data && event.notification.data.url) || "/feed",
+    (event.notification.data && event.notification.data.url) || "/",
     self.location.origin
   ).href;
   event.waitUntil(

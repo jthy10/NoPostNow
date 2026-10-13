@@ -17,31 +17,35 @@ Include the affected component, reproduction steps, impact, and any suggested
 mitigation. Remove real credentials and private user content from the report.
 You should receive an acknowledgment within seven days.
 
-## Secrets
+## What must stay private
 
-Firebase Web SDK configuration is public by design. The following values are
-secrets and must never be committed, logged, placed in client-side variables, or
-shared in an issue:
+Everything sensitive about an install lives in its data folder, which is never
+part of this repository:
 
-- Firebase service-account private keys
-- `FIREBASE_SERVICE_ACCOUNT_JSON`
-- `VAPID_PRIVATE_KEY`
-- `CRON_SECRET`
-- Transactional email API keys such as `RESEND_API_KEY`
-- User passwords, session cookies, and Firebase ID or refresh tokens
+- `config.json` — holds the push-notification signing key
+- `nopostnow.db` — accounts, password hashes, sessions, messages
+- `files/` — members' photos
 
-If a secret is exposed, revoke or rotate it immediately; deleting it from the
-latest Git commit is not sufficient.
+Never attach these to an issue or commit them. The repository's `.gitignore`
+excludes the default `data/` folder and the `nopostnow.json` pointer file.
 
-## Deployment expectations
+## How the software protects a site
 
-Production operators should:
+- Passwords are stored as salted scrypt hashes. Sessions are random tokens
+  kept in an HttpOnly cookie; only their hash is stored.
+- Every read and write is authorized on the server (`server/rules.ts`).
+  Anything not explicitly allowed is refused.
+- Photos have no public URL. Each request is checked against the session, and
+  uploads are verified to be images by their content.
+- Requests that change anything must come from the site's own pages.
+- Admin changes require the password to have been re-entered in the last 15
+  minutes, plus an authenticator code when two-factor sign-in is enabled.
+- Member profiles never contain email addresses.
 
-- Keep `REQUIRE_ADMIN_MFA=true` and require TOTP for administrators.
-- Use Application Default Credentials or a managed secret store.
-- Deploy the repository's Firestore and Storage rules with each release.
-- Enable Firebase App Check where supported by their deployment.
-- Enable GitHub secret scanning, push protection, Dependabot, and CodeQL.
-- Review Firebase Authentication, IAM, billing, and audit logs regularly.
-- Authenticate transactional email with SPF, DKIM, and DMARC, and keep
-  verification-email open and click tracking disabled.
+## Advice for hosts
+
+- Put the site behind HTTPS (a Cloudflare Tunnel or a reverse proxy) before
+  inviting anyone. See `docs/GOING-ONLINE.md`.
+- Keep sign-ups on invite-only unless you have a reason not to.
+- Turn on two-factor sign-in for admin accounts.
+- Back up the data folder, and keep the machine and Node.js up to date.

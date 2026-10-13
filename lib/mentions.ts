@@ -1,4 +1,4 @@
-// @mention parsing for comment threads. All pure — no Firestore, no React —
+// @mention parsing for comment threads. All pure — no network, no React —
 // so the composer, the notification fan-out, and the renderer share one
 // definition of what counts as a mention.
 //

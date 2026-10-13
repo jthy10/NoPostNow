@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { collection, getDocs, query, where } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { db, collection, getDocs, query, where } from "@/lib/store";
 import { isStandalone } from "@/lib/push";
 import { isThreadUnread, peerUidOf, type Thread } from "@/lib/dms";
+import { site } from "@/lib/site";
 
 // The DM invite hook: DMs only exist inside the installed app, so when
 // someone messages a friend who's still on the website, this banner is how
@@ -59,7 +59,7 @@ export default function DmInviteBanner({ uid }: { uid: string }) {
       <div className="min-w-0 flex-1">
         <p className="text-[13px] font-bold">{title}</p>
         <p className="mt-0.5 text-[11px] leading-snug text-meta">
-          Messages live in the NoPostNow app — install it on your phone to read
+          Messages live in the {site().siteName} app — install it on your phone to read
           and reply.
         </p>
       </div>

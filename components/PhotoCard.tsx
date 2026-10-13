@@ -8,7 +8,9 @@ import {
   deletePost,
   assignPost,
   fetchCommentPreview,
-  postDate,
+  badgeDate,
+  isMomentPost,
+  isSpecialDayPost,
   updateCaption,
   MAX_CAPTION_LENGTH,
   type CommentPreview,
@@ -16,17 +18,20 @@ import {
 } from "@/lib/posts";
 import { notifyLike } from "@/lib/push";
 import { useBlockSets } from "@/lib/blocks";
+import { useStreaks } from "@/lib/streaks";
 import { createClaim, fetchMyClaimedPostIds, noteClaimed } from "@/lib/claims";
 import { useAuth } from "@/lib/auth-context";
-import { ref, getBlob } from "firebase/storage";
-import { storage } from "@/lib/firebase";
+import { downloadFile } from "@/lib/files";
+import { dailyMomentLabel, specialDateLabel } from "@/lib/site";
 import Avatar from "./Avatar";
+import StreakFlame from "./StreakFlame";
 import AssignPostSheet from "./AssignPostSheet";
 
 // Full date and time, e.g. "TODAY 3:42 PM" / "JUL 4, 3:42 PM" / "JUL 4 2025, 3:42 PM".
-// postDate() corrects legacy Hostinger imports whose times were stored 4-5h off.
+// Reads badgeDate() — the same instant the daily-moment badges judge — so the
+// caption can never contradict the glow.
 function postDateTime(post: Post) {
-  const d = postDate(post);
+  const d = badgeDate(post);
   if (!d) return "";
   const time = d
     .toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
@@ -66,6 +71,7 @@ export default function PhotoCard({
   commentsVersion = 0,
   onOpenComments,
   onDeleted,
+  onLikeChange,
 }: {
   post: Post;
   uid: string;
@@ -73,10 +79,16 @@ export default function PhotoCard({
   commentsVersion?: number;
   onOpenComments: (post: Post) => void;
   onDeleted: (id: string) => void;
+  // Lets the owning list keep its copy of the post current. Matters where
+  // cards unmount and remount (the windowed archive): without it, this
+  // component's optimistic like state is lost and the card comes back showing
+  // the pre-like count.
+  onLikeChange?: (postId: string, likedBy: string[]) => void;
 }) {
   const src = useAuthedImage(post.imagePath, true); // compressed display copy
-  const { user, isAdmin } = useAuth();
+  const { user } = useAuth();
   const [likedBy, setLikedBy] = useState(post.likedBy ?? []);
+  const [syncedPost, setSyncedPost] = useState(post);
   // Admin legacy cleanup: an assignment made this session overrides the
   // (stale) post prop until the feed refetches.
   const [assigned, setAssigned] = useState<{ uid: string; username: string } | null>(null);
@@ -87,9 +99,8 @@ export default function PhotoCard({
   const ownerUid = assigned?.uid ?? post.userUUID;
   const ownerName = assigned?.username ?? post.username;
   const isAnonymousPost = !ownerName || ownerName === "Anonymous";
-  const canAssign = isAdmin && isAnonymousPost;
-  const canClaim =
-    !!user && !!user.uid && !isAdmin && isAnonymousPost;
+  const canAssign = user?.isAdmin === true && isAnonymousPost;
+  const canClaim = !!user && !user.isAdmin && isAnonymousPost;
   const [downloading, setDownloading] = useState(false);
   // Caption editing (own posts): null = not editing, string = draft text.
   // `caption` overrides the (stale) post prop after a successful save.
@@ -102,17 +113,49 @@ export default function PhotoCard({
   const lastTap = useRef(0);
   const likeNotified = useRef(false); // once per mount — toggling spam-pings nobody
   const liked = likedBy.includes(uid);
+  // Posts made on the site's daily moment, and every photo from its special
+  // date, get the celebratory treatment.
+  const specialBadge = isSpecialDayPost(post)
+    ? specialDateLabel()
+    : isMomentPost(post)
+      ? dailyMomentLabel()
+      : null;
   const { hidden } = useBlockSets(uid);
+  // Days in a row the poster is on, if it's worth a flame. One shared tally
+  // serves every card on the page (see lib/streaks).
+  const streaks = useStreaks(uid);
   // Blocked users' comments stay out of the preview (shared listener — cheap
   // even with many cards mounted).
   const latestVisible =
     preview?.latest.filter((c) => !c.userUUID || !hidden.has(c.userUUID)) ?? [];
+  // ...and their likes stay out of the count, which is the number the Likes
+  // tab in the sheet already shows. Leaving it unfiltered made the card read
+  // "3" over a list of two names — a blocked person visible by subtraction.
+  const visibleLikes = likedBy.filter((u) => !hidden.has(u)).length;
+
+  // Cards never remount across a refetch (same key={post.id} in every list
+  // that renders them), so a hard refresh hands this component a brand-new
+  // `post` object but likedBy/caption/assigned — seeded from props only once,
+  // on mount — would otherwise keep showing whatever was true back then.
+  // `post` only changes identity on a genuine refetch (loadMore appends reuse
+  // existing references), so resyncing here — during render, not in an effect
+  // — catches exactly that case without clobbering an in-flight optimistic
+  // like or caption edit, and without the extra render an effect would cost.
+  if (post !== syncedPost) {
+    setSyncedPost(post);
+    setLikedBy(post.likedBy ?? []);
+    setCaption(post.caption);
+    setAssigned(null);
+  }
 
   useEffect(() => {
     let cancelled = false;
-    fetchCommentPreview(post.id).then((p) => {
-      if (!cancelled) setPreview(p);
-    });
+    fetchCommentPreview(post.id)
+      .then((p) => {
+        if (!cancelled) setPreview(p);
+      })
+      // Offline or a denied read — the card just renders without its preview.
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -134,7 +177,9 @@ export default function PhotoCard({
   async function setLike(next: boolean) {
     if (next === liked) return;
     const prev = likedBy;
-    setLikedBy(next ? [...prev, uid] : prev.filter((id) => id !== uid));
+    const optimistic = next ? [...prev, uid] : prev.filter((id) => id !== uid);
+    setLikedBy(optimistic);
+    onLikeChange?.(post.id, optimistic);
     try {
       await toggleLike(post.id, uid, liked);
       if (next && ownerUid !== uid && !likeNotified.current) {
@@ -143,6 +188,7 @@ export default function PhotoCard({
       }
     } catch {
       setLikedBy(prev);
+      onLikeChange?.(post.id, prev);
     }
   }
 
@@ -203,7 +249,7 @@ export default function PhotoCard({
     if (!user?.uid || !user.email) return;
     if (!confirm("Are you sure you posted this photo?")) return;
     try {
-      await createClaim({ postId: post.id, uid: user.uid, username, email: user.email });
+      await createClaim({ postId: post.id, uid: user.uid, username });
       noteClaimed(user.uid, post.id);
       setClaimed(true);
     } catch {
@@ -218,7 +264,7 @@ export default function PhotoCard({
     if (downloading) return;
     setDownloading(true);
     try {
-      const blob = await getBlob(ref(storage, post.imagePath));
+      const blob = await downloadFile(post.imagePath);
       const name = post.imagePath.split("/").pop() || "photo.jpg";
       const file = new File([blob], name, { type: blob.type || "image/jpeg" });
       if (navigator.canShare?.({ files: [file] })) {
@@ -239,7 +285,30 @@ export default function PhotoCard({
 
   return (
     <article className="border-b-[0.5px] border-field px-2.5 pt-2.5">
-      <div className="relative rounded-lg" onPointerUp={handleImageTap}>
+      <div
+        className={`relative rounded-lg ${
+          specialBadge
+            ? // TopNav/PageHeader are fixed, opaque, and sized to exactly
+              // match the scroll container's top padding, so a card with
+              // nothing above it (every permalink from a notification) has
+              // its box-shadow glow bleed straight into the header's
+              // territory. Rather than push the card down to dodge it, let
+              // the glow spill over the header itself — above the nav
+              // (z-40) but below the notch/status-bar backing (z-50), which
+              // has to stay opaque for the clock/battery to stay readable.
+              "z-[45] animate-[seven-glow_3s_ease-in-out_infinite]"
+            : ""
+        }`}
+        onPointerUp={handleImageTap}
+      >
+        {specialBadge && (
+          <div className="pointer-events-none absolute left-2.5 top-2.5 z-10 flex items-center gap-1 rounded-full bg-black/55 px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-[1.5px] text-[#ffd88a] ring-1 ring-[#ffd88a]/40 backdrop-blur-sm">
+            <svg viewBox="0 0 24 24" className="h-3 w-3 fill-[#ffd88a]" aria-hidden>
+              <path d="M12 2l2.35 5.76L20.5 8.3l-4.7 4.02 1.5 6.18L12 15.6 6.7 18.5l1.5-6.18L3.5 8.3l6.15-.54z" />
+            </svg>
+            {specialBadge}
+          </div>
+        )}
         {/* Dimensions from the doc reserve exact space before bytes arrive
             (no layout shift) and let tall photos show uncropped. */}
         {post.imageWidth && post.imageHeight ? (
@@ -285,23 +354,29 @@ export default function PhotoCard({
         )}
       </div>
 
-      <div className="flex items-center justify-between px-1 pb-1 pt-2.5">
+      {/* The name gives way before the meta does: a long username ellipsizes
+          rather than shoving the date into a second line (or, on a narrow
+          phone, straight underneath itself). */}
+      <div className="flex items-center justify-between gap-2 px-1 pb-1 pt-2.5">
         {/* Legacy PHP-era posts have no userUUID, so there's no profile to open. */}
         {ownerUid ? (
           <Link
             href={ownerUid === uid ? "/profile" : `/u/${ownerUid}`}
-            className="flex items-center gap-2"
+            className="flex min-w-0 items-center gap-2"
           >
             <Avatar username={ownerName} className="h-7 w-7 text-[10px]" />
-            <span className="text-[13px] font-bold">{ownerName || "Anonymous"}</span>
+            <span className="flex min-w-0 items-center gap-1.5 text-[13px] font-bold">
+              <span className="truncate">{ownerName || "Anonymous"}</span>
+              <StreakFlame days={streaks.get(ownerUid) ?? 0} />
+            </span>
           </Link>
         ) : (
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2">
             <Avatar username={ownerName} className="h-7 w-7 text-[10px]" />
-            <span className="text-[13px] font-bold">{ownerName || "Anonymous"}</span>
+            <span className="truncate text-[13px] font-bold">{ownerName || "Anonymous"}</span>
           </div>
         )}
-        <div className="flex items-center gap-3">
+        <div className="flex shrink-0 items-center gap-3">
           {canAssign && (
             <button
               onClick={() => setAssignOpen(true)}
@@ -419,7 +494,7 @@ export default function PhotoCard({
             <path d={HEART_PATH} />
           </svg>
           <span className={`text-[13px] font-bold ${liked ? "text-heart" : "text-mut"}`}>
-            {likedBy.length}
+            {visibleLikes}
           </span>
         </button>
 
