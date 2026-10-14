@@ -246,7 +246,9 @@ async function main() {
   }
 
   // --- save ------------------------------------------------------------------
-  let vapid = before.vapid;
+  // An existing data folder keeps its own keys: new ones would silently cut
+  // off every device that has notifications turned on.
+  let vapid = (hasConfig(dataDir) ? readConfig(dataDir) : before).vapid;
   if (!vapid.publicKey || !vapid.privateKey) {
     // Signing keys for push notifications, made once and kept in the data folder.
     const webpush = createRequire(import.meta.url)("web-push");

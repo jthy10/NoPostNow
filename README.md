@@ -50,7 +50,8 @@ folder for its own use. Nothing else is needed: the panel is a local page
 served by Node itself, reachable only from the same computer.
 
 On a machine with no screen (a server you reach over SSH), the launcher uses
-a terminal wizard instead. You can also ask for that with `sh nopostnow.sh start`.
+a terminal wizard instead. You can also ask for that with `sh nopostnow.sh start`
+(on Windows, `.\nopostnow.cmd start`).
 
 Already have Node.js 22.18 or newer? The same thing by hand:
 
@@ -76,10 +77,12 @@ instructions.
 | --- | --- |
 | Start the site | `sh nopostnow.sh` (control panel) or `sh nopostnow.sh start` (terminal) |
 | Change the name, port, address, data folder… | **Options** in the panel, or `sh nopostnow.sh setup` |
-| List accounts | `npm run users -- list` |
-| Make an invite link | The panel, Admin → Members, or `npm run users -- invite` |
-| Someone forgot their password | The panel, Admin → Members, or `npm run users -- reset their@email` |
-| Locked out of the only admin account | `npm run users -- reset your@email` |
+| List accounts | `sh nopostnow.sh users list` |
+| Make an invite link | The panel, Admin → Members, or `sh nopostnow.sh users invite` |
+| Someone forgot their password | The panel, Admin → Members, or `sh nopostnow.sh users reset their@email` |
+| Locked out of the only admin account | `sh nopostnow.sh users reset your@email` |
+
+On Windows, use `.\nopostnow.cmd` in place of `sh nopostnow.sh`.
 
 The site sends no email. Invites and password resets are links that you pass
 along yourself.
@@ -94,8 +97,8 @@ it.
 ### Updating
 
 Get the new code (`git pull`, or download and replace the files, keeping your
-data folder), run `npm ci`, and start it again. The site rebuilds itself the
-first time a new version starts.
+data folder) and start it again. The launcher installs anything new, and the
+site rebuilds itself the first time changed code starts.
 
 ## How it works
 

@@ -8,9 +8,9 @@ import {
   getDoc,
   getDocs,
   query,
+  where,
   orderBy,
   limit,
-  startAfter,
   arrayUnion,
   arrayRemove,
   serverTimestamp,
@@ -143,7 +143,9 @@ export async function fetchPosts(
   const base = query(
     collection(db, "photos"),
     orderBy("timestamp", "desc"),
-    ...(cursor ? [startAfter(cursor)] : []),
+    // By value rather than by position, so the next page still loads when the
+    // post the cursor points at has since been deleted.
+    ...(cursor ? [where("timestamp", "<", cursor.data().timestamp)] : []),
     limit(PAGE_SIZE)
   );
   const snap = await getDocs(base);
@@ -219,21 +221,6 @@ export async function createPost(opts: {
   // Callers pass this to the notification fan-out so pushes and the bell
   // feed can deep-link to /p/{id}.
   return docRef.id;
-}
-
-// Admin cleanup: attach an unattributed post to the member who really posted
-// it. The server only accepts this from an admin who unlocked /admin within
-// the last 15 minutes. Deliberately no notification — the
-// member already knows they posted it.
-export async function assignPost(postId: string, uid: string, username: string) {
-  await updateDoc(doc(db, "photos", postId), { userUUID: uid, username });
-  // Fire-and-forget audit entry, same as the admin panel's log().
-  void addDoc(collection(db, "adminLog"), {
-    action: "assign-post",
-    detail: `${postId} → ${username} (${uid})`,
-    at: serverTimestamp(),
-  }).catch(() => {});
-  invalidateFeedCache();
 }
 
 export const MAX_CAPTION_LENGTH = 70;

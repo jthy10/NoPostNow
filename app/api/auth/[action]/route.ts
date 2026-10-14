@@ -70,6 +70,7 @@ export async function POST(
   } catch {
     return fail(400, "bad-json", "Malformed request.");
   }
+  if (!body || typeof body !== "object") return fail(400, "bad-json", "Malformed request.");
   const text = (key: string) => (typeof body[key] === "string" ? (body[key] as string) : "");
 
   // --- signed-out actions ---------------------------------------------------
@@ -189,8 +190,6 @@ export async function POST(
     return Response.json({ ok: true, freshAdmin: isFreshAdmin((await getSession())!) });
   }
 
-  clearAttempts(key);
-
   if (action === "password") {
     try {
       setPassword(db(), uid, text("newPassword"));
@@ -239,8 +238,10 @@ export async function POST(
   if (action === "totp-disable") {
     const factor = secondFactor(uid, body.code);
     if (factor === "required" || factor === "wrong") {
+      if (factor === "wrong") recordAttempt(key);
       return fail(401, "mfa-wrong", "Enter a current code from your authenticator app.");
     }
+    clearAttempts(key);
     db().prepare("UPDATE accounts SET totp_enabled = 0, totp_secret = NULL WHERE uid = ?").run(uid);
     return Response.json({ ok: true });
   }

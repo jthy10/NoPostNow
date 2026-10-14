@@ -37,6 +37,12 @@ function parentOf(path: string) {
 
 function validSpec(spec: QuerySpec): boolean {
   if (!spec || typeof spec !== "object") return false;
+  const tuples = (list: unknown, size: number) =>
+    list === undefined ||
+    (Array.isArray(list) &&
+      list.length <= 10 &&
+      list.every((t) => Array.isArray(t) && t.length === size && typeof t[0] === "string"));
+  if (!tuples(spec.where, 3) || !tuples(spec.orderBy, 2)) return false;
   if (spec.group !== undefined) {
     return typeof spec.group === "string" && /^[A-Za-z_]{1,40}$/.test(spec.group);
   }
@@ -56,6 +62,7 @@ export async function POST(request: Request) {
   } catch {
     return fail(400, "bad-json");
   }
+  if (!body || typeof body !== "object") return fail(400, "bad-json");
   const op = body.op;
 
   if (op === "get") {

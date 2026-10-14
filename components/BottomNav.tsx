@@ -63,7 +63,7 @@ export default function BottomNav({
 
         <button
           onClick={() => {
-            // The 7:27 badge judges this instant, not when the upload lands —
+            // The daily-moment badge judges this instant, not when the upload lands —
             // opening the camera on the minute is what counts (see createPost).
             markCameraOpened();
             cameraInputRef.current?.click();

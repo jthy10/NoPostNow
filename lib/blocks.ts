@@ -113,6 +113,12 @@ function ensureListeners(uid: string) {
   };
 }
 
+// Signing out: stop watching the old account's lists.
+export function stopBlockListeners() {
+  stopListeners?.();
+  current = EMPTY;
+}
+
 // Live block state for the signed-in user. Starts as the empty set so pages
 // render immediately and tighten up the moment the listeners land. The
 // shared listeners stay alive for the session (a friend group's block lists

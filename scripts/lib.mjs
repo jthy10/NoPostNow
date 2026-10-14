@@ -1,5 +1,6 @@
 // Shared by the command-line tools: finding the app folder, opening the data
 // folder, and asking questions in the terminal.
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
@@ -18,7 +19,6 @@ export function openInstance() {
   const dataDir = resolveDataDir(appDir);
   return {
     dataDir,
-    configured: hasConfig(dataDir),
     config: hasConfig(dataDir) ? readConfig(dataDir) : DEFAULT_CONFIG,
     db: openDatabase(dataDir),
   };
@@ -104,19 +104,34 @@ export async function choose(question, options, fallbackIndex = 0) {
   return options[Number(answer) - 1].value;
 }
 
-export function exists(file) {
-  return fs.existsSync(file);
-}
-
 // --- the production build ----------------------------------------------------
 
 const buildStamp = path.join(appDir, ".next", "nopostnow-build");
 
+// A fingerprint of everything the build is made from. An update does not
+// always change the version number, so the files themselves are what counts.
+const BUILD_INPUTS = ["app", "components", "lib", "server", "public", "assets"];
+const BUILD_FILES = ["package.json", "package-lock.json", "next.config.ts", "instrumentation.ts"];
+
 function appVersion() {
-  return JSON.parse(fs.readFileSync(path.join(appDir, "package.json"), "utf8")).version;
+  const hash = crypto.createHash("sha256");
+  const add = (file) => {
+    const stat = fs.statSync(file);
+    hash.update(`${path.relative(appDir, file)}|${stat.size}|${Math.floor(stat.mtimeMs)}\n`);
+  };
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else add(full);
+    }
+  };
+  for (const dir of BUILD_INPUTS) walk(path.join(appDir, dir));
+  for (const file of BUILD_FILES) add(path.join(appDir, file));
+  return hash.digest("hex");
 }
 
-// True when the site has been built from this version of the code. After an
+// True when the site has been built from the code as it is now. After an
 // update the old build is stale and must be made again.
 export function buildIsCurrent() {
   try {

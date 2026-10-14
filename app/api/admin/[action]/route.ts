@@ -62,7 +62,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ act
     return fail(403, "permission-denied", "Unlock the admin console again to do that.");
   }
   const { action } = await params;
-  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  const body = ((await request.json().catch(() => null)) ?? {}) as Record<string, unknown>;
   const targetUid = typeof body.uid === "string" ? body.uid : "";
 
   if (action === "invite-create") {

@@ -114,8 +114,7 @@ function field(data: Data, name: string): Json | undefined {
 type Transform =
   | { __op: "serverTimestamp" }
   | { __op: "arrayUnion"; values: Json[] }
-  | { __op: "arrayRemove"; values: Json[] }
-  | { __op: "delete" };
+  | { __op: "arrayRemove"; values: Json[] };
 
 function isTransform(value: unknown): value is Transform {
   return (
@@ -126,9 +125,17 @@ function isTransform(value: unknown): value is Transform {
   );
 }
 
-const REMOVE = Symbol("remove");
+// Assigning one of these would change an object's prototype instead of adding
+// a field, leaving a document that passes the rules but is saved without the
+// fields they checked.
+function safeKey(key: string): string {
+  if (key === "__proto__" || key === "constructor" || key === "prototype") {
+    throw new Error("Invalid field name.");
+  }
+  return key;
+}
 
-function resolve(incoming: Json, existing: Json | undefined, now: number): Json | typeof REMOVE {
+function resolve(incoming: Json, existing: Json | undefined, now: number): Json {
   if (isTransform(incoming)) {
     const current = Array.isArray(existing) ? existing : [];
     switch (incoming.__op) {
@@ -143,22 +150,14 @@ function resolve(incoming: Json, existing: Json | undefined, now: number): Json 
       }
       case "arrayRemove":
         return current.filter((x) => !(incoming.values ?? []).some((v) => deepEqual(x, v)));
-      case "delete":
-        return REMOVE;
+      default:
+        throw new Error("Unknown transform.");
     }
   }
-  if (Array.isArray(incoming)) {
-    return incoming.map((v) => {
-      const r = resolve(v, undefined, now);
-      return r === REMOVE ? null : r;
-    });
-  }
+  if (Array.isArray(incoming)) return incoming.map((v) => resolve(v, undefined, now));
   if (isPlainObject(incoming)) {
     const out: Data = {};
-    for (const [k, v] of Object.entries(incoming)) {
-      const r = resolve(v, undefined, now);
-      if (r !== REMOVE) out[k] = r;
-    }
+    for (const [k, v] of Object.entries(incoming)) out[safeKey(k)] = resolve(v, undefined, now);
     return out;
   }
   return incoming;
@@ -166,20 +165,19 @@ function resolve(incoming: Json, existing: Json | undefined, now: number): Json 
 
 function mergeInto(target: Data, incoming: Data, now: number) {
   for (const [key, value] of Object.entries(incoming)) {
+    safeKey(key);
     if (isPlainObject(value) && !isTransform(value)) {
       const child: Data = isPlainObject(target[key]) ? { ...(target[key] as Data) } : {};
       mergeInto(child, value, now);
       target[key] = child;
     } else {
-      const r = resolve(value, target[key], now);
-      if (r === REMOVE) delete target[key];
-      else target[key] = r;
+      target[key] = resolve(value, target[key], now);
     }
   }
 }
 
 function setAtPath(target: Data, dotted: string, value: Json, now: number) {
-  const parts = dotted.split(".");
+  const parts = dotted.split(".").map(safeKey);
   let node = target;
   for (const part of parts.slice(0, -1)) {
     const next: Data = isPlainObject(node[part]) ? { ...(node[part] as Data) } : {};
@@ -187,9 +185,7 @@ function setAtPath(target: Data, dotted: string, value: Json, now: number) {
     node = next;
   }
   const last = parts[parts.length - 1];
-  const r = resolve(value, node[last], now);
-  if (r === REMOVE) delete node[last];
-  else node[last] = r;
+  node[last] = resolve(value, node[last], now);
 }
 
 export type WriteKind = "set" | "merge" | "update";
@@ -265,8 +261,6 @@ export type QuerySpec = {
   where?: Filter[];
   orderBy?: Order[];
   limit?: number;
-  // Path of the document to start after, as returned by an earlier page.
-  startAfter?: string;
 };
 
 // Timestamps, numbers and strings each sort among themselves; mixed types fall
@@ -296,27 +290,17 @@ function matches(data: Data, [name, op, value]: Filter): boolean {
   switch (op) {
     case "==":
       return deepEqual(actual, value);
-    case "!=":
-      return actual !== undefined && !deepEqual(actual, value);
     case "array-contains":
       return Array.isArray(actual) && actual.some((v) => deepEqual(v, value));
-    case "in":
-      return Array.isArray(value) && value.some((v) => deepEqual(actual, v));
     case "<":
       return actual !== undefined && rank(actual) === rank(value) && compare(actual, value) < 0;
-    case "<=":
-      return actual !== undefined && rank(actual) === rank(value) && compare(actual, value) <= 0;
-    case ">":
-      return actual !== undefined && rank(actual) === rank(value) && compare(actual, value) > 0;
-    case ">=":
-      return actual !== undefined && rank(actual) === rank(value) && compare(actual, value) >= 0;
     default:
       return false;
   }
 }
 
 // Filters and orders, but does not paginate: the caller first drops documents
-// the reader may not see, then applies startAfter and limit (see paginate), so
+// the reader may not see, then applies the limit (see paginate), so
 // a page is never short because of hidden rows.
 export function runQuery(spec: QuerySpec): StoredDoc[] {
   let docs = spec.group ? listGroup(spec.group) : listCollection(spec.parent ?? "");
@@ -336,11 +320,5 @@ export function runQuery(spec: QuerySpec): StoredDoc[] {
 }
 
 export function paginate(docs: StoredDoc[], spec: QuerySpec): StoredDoc[] {
-  let out = docs;
-  if (spec.startAfter) {
-    const index = out.findIndex((d) => d.path === spec.startAfter);
-    out = index >= 0 ? out.slice(index + 1) : [];
-  }
-  if (typeof spec.limit === "number" && spec.limit >= 0) out = out.slice(0, spec.limit);
-  return out;
+  return typeof spec.limit === "number" && spec.limit >= 0 ? docs.slice(0, spec.limit) : docs;
 }

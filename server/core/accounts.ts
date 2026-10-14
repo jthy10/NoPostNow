@@ -152,10 +152,6 @@ export function listAccounts(db: Db): Account[] {
   );
 }
 
-export function countAccounts(db: Db): number {
-  return (db.prepare("SELECT COUNT(*) AS n FROM accounts").get() as { n: number }).n;
-}
-
 export function checkPassword(db: Db, uid: string, password: string): boolean {
   const row = db.prepare("SELECT pass_hash FROM accounts WHERE uid = ?").get(uid) as
     | { pass_hash: string }

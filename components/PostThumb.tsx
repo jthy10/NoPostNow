@@ -18,7 +18,11 @@ function imagePathFor(postId: string): Promise<string | null> {
           ? (snap.data().imagePath as string) ?? null
           : null
       )
-      .catch(() => null);
+      // Not remembered, so the thumbnail gets another chance next time.
+      .catch(() => {
+        pathCache.delete(postId);
+        return null;
+      });
     pathCache.set(postId, hit);
   }
   return hit;

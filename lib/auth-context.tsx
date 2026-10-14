@@ -13,6 +13,9 @@ import { SIGNED_OUT_EVENT } from "./api";
 import { db, doc, serverTimestamp, updateDoc } from "./store";
 import { isStandalone } from "./push";
 import { invalidateAvatarMap } from "./users";
+import { stopBlockListeners } from "./blocks";
+import { forgetFeed } from "./feed-cache";
+import { invalidateAllCommentPreviews } from "./posts";
 
 type AuthState = {
   user: User | null;
@@ -68,6 +71,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     writeCached(session);
     setCurrentUid(session.user?.uid ?? null);
     invalidateAvatarMap();
+    if (!session.user) {
+      stopBlockListeners();
+      forgetFeed();
+      invalidateAllCommentPreviews();
+    }
     setUser(session.user);
     setUsername(session.user ? session.username ?? "Anonymous" : null);
     setAvatarPath(session.user ? session.avatarPath ?? null : null);

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Starts the site using the address and port chosen during setup.
-//   npm start        production (run `npm run build` first)
+//   npm start        production (builds first when the code has changed)
 //   npm run dev      development, with live reload
 import { spawn, spawnSync } from "node:child_process";
 import os from "node:os";
@@ -17,7 +17,7 @@ if (!hasConfig(dataDir)) {
 }
 const nextBin = createRequire(import.meta.url).resolve("next/dist/bin/next");
 if (!dev && !buildIsCurrent()) {
-  console.log(`\n  ${bold("Building the site")} ${dim("(about a minute, once per version)…")}`);
+  console.log(`\n  ${bold("Building the site")} ${dim("(about a minute, once per update)…")}`);
   const build = spawnSync(process.execPath, [nextBin, "build"], { cwd: appDir, stdio: "inherit" });
   if (build.status !== 0) {
     console.error(red("\nThe build failed. Fix the error above and start again."));

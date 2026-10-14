@@ -119,10 +119,12 @@ export default function ThreadPage({
 
   // Reading the thread clears its unread state (list dot + chat badge).
   useEffect(() => {
-    if (myUid && thread && isThreadUnread(thread, myUid)) {
+    // Only where the conversation is actually shown: a browser tab gets the
+    // install pitch instead, and must not mark messages read unseen.
+    if (standalone && myUid && thread && isThreadUnread(thread, myUid)) {
       void markThreadSeen(threadId, myUid);
     }
-  }, [myUid, thread, threadId]);
+  }, [standalone, myUid, thread, threadId]);
 
   // Stick to the bottom: jump on first load, smooth-follow new messages,
   // and re-pin when the keyboard resizes the list.

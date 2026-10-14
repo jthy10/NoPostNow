@@ -254,7 +254,7 @@ async function saveOptions(input) {
   try {
     const needsAdmin = countAdmins(targetDb) === 0;
     if (needsAdmin && !(admin.email && admin.username && admin.password)) {
-      throw fail("Fill in the admin account — it is how you will sign in.");
+      throw Object.assign(fail("Fill in the admin account — it is how you will sign in."), { needsAdmin: true });
     }
     if (needsAdmin) {
       try {
@@ -446,7 +446,7 @@ const server = http.createServer(async (req, res) => {
     }
   } catch (err) {
     if (!err.expected) log(err.stack || String(err), "err");
-    return json(400, { error: err.expected ? err.message : "Something went wrong — see the console.", needsConfirm: err.needsConfirm });
+    return json(400, { error: err.expected ? err.message : "Something went wrong — see the console.", needsConfirm: err.needsConfirm, needsAdmin: err.needsAdmin });
   }
 });
 
@@ -480,8 +480,8 @@ function openWindow(address) {
     // A Chromium-family browser can show the page as a plain window with no
     // tabs or address bar, which is what makes it feel like a program.
     const browser = findBrowser();
-    if (browser) return spawn(browser, [`--app=${address}`, "--window-size=1180,760"], detached).unref();
-    if (process.platform === "win32") return spawn("cmd", ["/c", "start", "", address], detached).unref();
+    if (browser) return spawn(browser, [`--app=${address}`, "--window-size=1180,760"], detached).on("error", () => {}).unref();
+    if (process.platform === "win32") return spawn("cmd", ["/c", "start", "", address], detached).on("error", () => {}).unref();
     spawn(process.platform === "darwin" ? "open" : "xdg-open", [address], detached).on("error", () => {}).unref();
   } catch {
     // The address is printed below either way.
@@ -507,6 +507,9 @@ if (!process.argv.includes("--no-open")) openWindow(address);
 log(`NoPostNow ${version} · Node ${process.versions.node}`, "info");
 if (configured()) void startSite();
 else log("Welcome! Fill in the setup form to create your site.", "info");
+
+// However the panel ends, the site it started must not be left holding the port.
+process.on("exit", () => child?.kill());
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, async () => {

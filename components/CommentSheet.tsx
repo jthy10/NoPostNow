@@ -132,7 +132,9 @@ export default function CommentSheet({
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- initial comment fetch on mount
-    load().then(() => scrollToLatest());
+    load()
+      .then(() => scrollToLatest())
+      .catch(() => setAllComments((prev) => prev ?? []));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [post.id]);
 

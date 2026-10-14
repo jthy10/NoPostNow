@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { db, collection, doc, getDocs, query, updateDoc, where } from "@/lib/store";
 import { signOut } from "@/lib/account";
+import { forgetPushSubscription } from "@/lib/push";
 import { downloadFile, uploadFile } from "@/lib/files";
 import { useAuth } from "@/lib/auth-context";
 import { useAuthedImage } from "@/lib/use-authed-image";
@@ -64,6 +65,9 @@ export default function ProfilePage() {
           .filter((p) => p.timestamp && p.deleted !== true)
           .sort((a, b) => b.timestamp!.toDate().getTime() - a.timestamp!.toDate().getTime());
         setMyPosts(posts);
+      },
+      () => {
+        if (!cancelled) setMyPosts([]);
       }
     );
     return () => {
@@ -248,7 +252,11 @@ export default function ProfilePage() {
               </>
             )}
             <button
-              onClick={() => signOut().finally(() => adopt({ user: null }))}
+              onClick={() =>
+                forgetPushSubscription()
+                  .then(signOut)
+                  .finally(() => adopt({ user: null }))
+              }
               className="rounded-lg border-[0.5px] border-edge px-5 py-2 text-[11px] font-bold uppercase tracking-[1.5px] text-mut transition-colors hover:border-mut hover:text-white"
             >
               Sign Out

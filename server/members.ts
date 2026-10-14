@@ -22,7 +22,7 @@ export function eraseMember(uid: string) {
   for (const sub of listCollection("pushSubscriptions")) {
     if (sub.data.uid === uid) removeDoc(sub.path);
   }
-  for (const root of ["notifications", "notifPrefs", "blocks", "unique_users", "adminChats", "users"]) {
+  for (const root of ["notifications", "notifPrefs", "blocks", "adminChats", "users"]) {
     removeChildren(`${root}/${uid}`);
     removeDoc(`${root}/${uid}`);
   }
@@ -30,4 +30,5 @@ export function eraseMember(uid: string) {
     fs.rmSync(path.join(filesDir(), ...folder.split("/"), uid), { recursive: true, force: true });
   }
   deleteAccount(db(), uid);
+  announce({ parent: "users", path: `users/${uid}`, data: {} });
 }

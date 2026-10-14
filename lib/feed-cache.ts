@@ -247,3 +247,11 @@ export function invalidateFeedCache() {
   archiveAt = 0;
   wakeWatchers();
 }
+
+// Signing out: nothing about the group's posts stays behind on the device.
+export function forgetFeed() {
+  invalidateFeedCache();
+  try {
+    localStorage.removeItem(ARCHIVE_KEY);
+  } catch {}
+}

@@ -4,7 +4,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 import { useBlockSets } from "@/lib/blocks";
-import { fetchArchive, readArchive, readStoredArchive, saveArchive } from "@/lib/feed-cache";
+import {
+  archiveIsStale,
+  fetchArchive,
+  readArchive,
+  readStoredArchive,
+  saveArchive,
+} from "@/lib/feed-cache";
 import { estimateCardHeight, postDate, isMomentPost, type Post } from "@/lib/posts";
 import { dailyMomentLabel, site } from "@/lib/site";
 import { useVirtualList } from "@/lib/use-virtual-list";
@@ -72,13 +78,14 @@ export default function BrowsePage() {
     if (cached) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- session-cache restore
       setPosts(cached);
-      return;
+      if (!archiveIsStale()) return;
+    } else {
+      // Instant paint from the device cache while the fresh query runs. The
+      // fetch is shared with the profile like standings, so whichever page ran
+      // first this session has already paid for it.
+      const stored = readStoredArchive();
+      if (stored) setPosts(stored);
     }
-    // Instant paint from the device cache while the fresh query runs. The
-    // fetch is shared with the profile like standings, so whichever page ran
-    // first this session has already paid for it.
-    const stored = readStoredArchive();
-    if (stored) setPosts(stored);
     let cancelled = false;
     fetchArchive()
       .then((list) => {
@@ -128,10 +135,10 @@ export default function BrowsePage() {
   // Cards unmount when they leave the window, taking their optimistic like
   // state with them — so the list keeps the authoritative copy. Also keeps the
   // "most liked" sort and the session cache honest.
-  const handleLikeChange = useCallback((postId: string, likedBy: string[]) => {
+  const patchPost = useCallback((postId: string, patch: Partial<Post>) => {
     setPosts((prev) => {
       if (!prev) return prev;
-      const next = prev.map((p) => (p.id === postId ? { ...p, likedBy } : p));
+      const next = prev.map((p) => (p.id === postId ? { ...p, ...patch } : p));
       saveArchive(next); // idempotent assignment; safe from inside the updater
       return next;
     });
@@ -288,7 +295,8 @@ export default function BrowsePage() {
                       username={username || "Anonymous"}
                       commentsVersion={commentBumps[post.id] ?? 0}
                       onOpenComments={setActiveComments}
-                      onLikeChange={handleLikeChange}
+                      onLikeChange={(id, likedBy) => patchPost(id, { likedBy })}
+                      onCaptionChange={(id, caption) => patchPost(id, { caption })}
                       onDeleted={(id) =>
                         setPosts((prev) => (prev ? prev.filter((p) => p.id !== id) : prev))
                       }

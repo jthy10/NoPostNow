@@ -127,8 +127,9 @@ WantedBy=multi-user.target
 Then run `sudo systemctl enable --now nopostnow`.
 
 **Windows.** Open **Task Scheduler → Create Task**. Set the trigger to **At
-startup**, the action to start `nopostnow.cmd` from your NoPostNow folder, and
-tick **Run whether user is logged on or not**.
+startup**, the action to start `nopostnow.cmd` from your NoPostNow folder with
+`start` in **Add arguments** (without it the task would try to open the control
+panel window), and tick **Run whether user is logged on or not**.
 
 Also keep the computer from going to sleep, and back up the data folder — it
 holds every photo and account.

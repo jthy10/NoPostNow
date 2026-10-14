@@ -111,10 +111,10 @@ body {
   70% { box-shadow: 0 0 0 1px rgba(255, 59, 92, 0.5), 0 0 10px 1px rgba(255, 59, 92, 0.25); }
 }
 
-/* Golden halo on a 7:27 ritual post or any photo posted on 7/27.
+/* Golden halo on a daily-moment post or any photo posted on the special date.
    Gently breathes so it reads as special without ever pulling focus from
    the photo. */
-@keyframes seven-glow {
+@keyframes moment-glow {
   0%, 100% {
     box-shadow: 0 0 0 1px rgba(255, 205, 110, 0.55), 0 0 20px 2px rgba(255, 190, 84, 0.32);
   }

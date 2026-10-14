@@ -46,13 +46,18 @@ function dayNumber(now: Date, timeZone: string): number {
   return Date.UTC(year, month - 1, day) / 86_400_000;
 }
 
-// Called a few times a minute. Sends at most once per day, on the minute.
+// How long after the chosen minute the reminder may still go out, so a host
+// that was asleep or busy through that minute does not skip the whole day.
+const LATE_MINUTES = 10;
+
+// Called a few times a minute. Sends at most once per day.
 export async function tickDailyMoment(now: Date = new Date()) {
   const { dailyMoment, timeZone, siteName } = config();
   if (!dailyMoment.enabled) return;
   const [hour, minute] = dailyMoment.time.split(":").map(Number);
   const clock = wallClock(now, timeZone);
-  if (clock.hour !== hour || clock.minute !== minute) return;
+  const late = clock.hour * 60 + clock.minute - (hour * 60 + minute);
+  if (late < 0 || late > LATE_MINUTES) return;
 
   const today = dayNumber(now, timeZone);
   const last = db().prepare("SELECT value FROM kv WHERE key = ?").get(KEY) as

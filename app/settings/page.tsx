@@ -887,7 +887,7 @@ export default function SettingsPage() {
 
         <Group title="Support">
           <Row
-            label="Note to the developers"
+            label="Note to the admins"
             sub="Ideas, bugs, complaints — straight to the people who run this site. Lands in your admins chat too, so you can keep the conversation going there."
             open={openRow === "feedback"}
             onToggle={() => toggleRow("feedback")}

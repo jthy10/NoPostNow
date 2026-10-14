@@ -93,7 +93,7 @@ export default function InstallCta({ variant }: { variant: "pill" | "full" }) {
 
   if (installed) {
     return (
-      <Link href="/feed" className={`${buttonClass} block text-center`}>
+      <Link href="/" className={`${buttonClass} block text-center`}>
         OPEN
       </Link>
     );

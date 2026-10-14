@@ -54,7 +54,9 @@ export async function sendPush(opts: {
 }): Promise<{ sent: number; stale: number }> {
   if (!pushConfigured()) return { sent: 0, stale: 0 };
   const { vapid, publicUrl } = config();
-  webpush.setVapidDetails(vapid.subject || publicUrl || "mailto:admin@localhost", vapid.publicKey, vapid.privateKey);
+  // web-push refuses any subject that is not an https: or mailto: address.
+  const subject = [vapid.subject, publicUrl].find((s) => /^(https:|mailto:)/.test(s ?? ""));
+  webpush.setVapidDetails(subject ?? "mailto:admin@localhost", vapid.publicKey, vapid.privateKey);
 
   const targets = opts.to ? new Set(opts.to) : null;
   const body = JSON.stringify(opts.payload);
@@ -72,7 +74,9 @@ export async function sendPush(opts: {
             endpoint: String(sub.data.endpoint),
             keys: { p256dh: String(sub.data.p256dh), auth: String(sub.data.auth) },
           },
-          body
+          body,
+          // A push service that never answers must not hold the request open.
+          { timeout: 10_000 }
         );
         sent++;
       } catch (err) {

@@ -1,7 +1,15 @@
 // Service worker: offline-tolerant app shell + push notifications.
 // Only pages and static assets are handled — API and photo requests pass
 // straight through untouched (they carry the session and must never be cached).
-const CACHE = "nopostnow-v2";
+const CACHE = "nopostnow-v3";
+
+// Only a real, successful answer is worth keeping: a cached error page or a
+// cached "sign in" would be served long after the problem went away.
+function keep(request, res) {
+  if (!res.ok || res.type !== "basic" || res.redirected) return;
+  const copy = res.clone();
+  caches.open(CACHE).then((cache) => cache.put(request, copy));
+}
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -25,14 +33,14 @@ self.addEventListener("fetch", (event) => {
   const request = event.request;
   const url = new URL(request.url);
   if (request.method !== "GET" || url.origin !== location.origin) return;
+  if (url.pathname.startsWith("/api/")) return;
 
   // Pages: network first (always fresh), cached shell if offline.
   if (request.mode === "navigate") {
     event.respondWith(
       fetch(request)
         .then((res) => {
-          const copy = res.clone();
-          caches.open(CACHE).then((cache) => cache.put(request, copy));
+          keep(request, res);
           return res;
         })
         .catch(() =>
@@ -49,8 +57,7 @@ self.addEventListener("fetch", (event) => {
         (hit) =>
           hit ||
           fetch(request).then((res) => {
-            const copy = res.clone();
-            caches.open(CACHE).then((cache) => cache.put(request, copy));
+            keep(request, res);
             return res;
           })
       )

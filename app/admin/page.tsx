@@ -20,12 +20,12 @@ import { useAuth } from "@/lib/auth-context";
 import { ApiError, apiGet, apiPost } from "@/lib/api";
 import { beginTotp, confirmTotp, reauthenticate, type User } from "@/lib/account";
 import { site as siteInfo } from "@/lib/site";
+import { validateUsername } from "@/lib/settings";
 import AccessPanel from "./AccessPanel";
 import TopNav from "@/components/TopNav";
 import {
   type Announcement,
   type C,
-  type Claim,
   type Data,
   type LogEntry,
   type P,
@@ -734,11 +734,20 @@ function MemberDetail({
   );
 }
 
+// The push service a device is registered with. Never throws: one malformed
+// entry must not take the whole page down.
+function endpointHost(endpoint: string): string {
+  try {
+    return new URL(endpoint).hostname;
+  } catch {
+    return "invalid address";
+  }
+}
+
 /* -------------------------------- the page --------------------------------- */
 
 type TabId =
   | "overview"
-  | "approvals"
   | "analytics"
   | "leaderboards"
   | "members"
@@ -782,9 +791,6 @@ export default function AdminPage() {
   // moderation sub-view — posts, the trash, or the comment browser
   const [modView, setModView] = useState<"posts" | "trash" | "comments">("posts");
 
-  // approvals (claim queue) multi-select
-  const [selectedClaims, setSelectedClaims] = useState<Set<string>>(new Set());
-
   // active tab
   const [tab, setTab] = useState<TabId>("overview");
 
@@ -797,6 +803,7 @@ export default function AdminPage() {
   function lock(reason?: string) {
     setUnlocked(false);
     setData(null);
+    setLoadError(null);
     setGateError(reason ?? null);
   }
 
@@ -839,11 +846,9 @@ export default function AdminPage() {
           commentsSnap,
           usersSnap,
           subsSnap,
-          legacySnap,
           logSnap,
           annSnap,
           fbSnap,
-          claimsSnap,
           blocksSnap,
           accountList,
         ] = await Promise.all([
@@ -851,11 +856,9 @@ export default function AdminPage() {
           getDocs(collectionGroup(db, "comments")),
           getDocs(collection(db, "users")),
           getDocs(collection(db, "pushSubscriptions")),
-          getDocs(collection(db, "unique_users")),
           getDocs(collection(db, "adminLog")),
           getDoc(doc(db, "config", "announcement")),
           getDocs(collection(db, "feedback")),
-          getDocs(collection(db, "claims")),
           getDocs(collection(db, "blocks")),
           // Profiles hold no email address; only admins can ask for them.
           apiGet<{ accounts: { uid: string; email: string }[] }>("/api/admin/accounts"),
@@ -911,15 +914,6 @@ export default function AdminPage() {
               updatedAt: x.updatedAt?.toDate?.() ?? null,
             };
           }),
-          legacy: legacySnap.docs
-            .map((d) => d.data().firstJoined?.toDate?.() ?? null)
-            .filter((d): d is Date => d !== null),
-          // Same snapshot, keeping the doc id (= uid) and email this time.
-          identities: legacySnap.docs.map((d) => ({
-            uid: d.id,
-            email: typeof d.data().email === "string" ? d.data().email : null,
-            firstJoined: d.data().firstJoined?.toDate?.() ?? null,
-          })),
           blocks: blocksSnap.docs.map((d) => ({
             uid: d.id,
             blocked: (Array.isArray(d.data().blocked) ? d.data().blocked : []).filter(
@@ -958,19 +952,6 @@ export default function AdminPage() {
                 updatedAt: annSnap.data().updatedAt?.toDate?.() ?? null,
               }
             : null,
-          claims: claimsSnap.docs
-            .map((d) => {
-              const x = d.data();
-              return {
-                id: d.id,
-                postId: x.postId ?? "",
-                uid: x.uid ?? null,
-                username: x.username ?? "?",
-                email: emailOf.get(x.uid) ?? "",
-                at: x.at?.toDate?.() ?? null,
-              };
-            })
-            .sort((a, b) => (b.at?.getTime() ?? 0) - (a.at?.getTime() ?? 0)),
         });
       } catch (e) {
         if (!cancelled) setLoadError(e instanceof Error ? e.message : "Failed to load.");
@@ -1001,39 +982,6 @@ export default function AdminPage() {
     const nameOf = (uid: string | null) =>
       (uid && uidName.get(uid)) || (uid ? `${uid.slice(0, 8)}…` : "Anonymous");
 
-    // Members whose users doc never got a uid — they only self-heal on
-    // sign-in, so anyone who hasn't been back since profiles shipped is still
-    // missing one. Without it they can't be @mentioned, DM'd, or reached by
-    // the bell feed, and the app has to fall back to guessing from posts.
-    //
-    // Two recovery sources, most reliable first: unique_users (an actual
-    // uid -> email record) and their posts (username -> userUUID, which a
-    // rename could have made stale, so it's the fallback).
-    const emailToUid = new Map<string, string>();
-    for (const id of data.identities) {
-      if (id.email) emailToUid.set(id.email.toLowerCase(), id.uid);
-    }
-    const nameToUid = new Map<string, string>();
-    for (const p of data.photos) {
-      if (p.username && p.userUUID && !nameToUid.has(p.username)) {
-        nameToUid.set(p.username, p.userUUID);
-      }
-    }
-    const missingUids = data.users
-      .filter((u) => !u.uid)
-      .map((u) => {
-        const fromIdentity = emailToUid.get(u.email.toLowerCase()) ?? null;
-        const fromPosts = nameToUid.get(u.username) ?? null;
-        return {
-          user: u,
-          uid: fromIdentity ?? fromPosts,
-          source: fromIdentity ? "unique_users" : fromPosts ? "their posts" : null,
-          // Worth eyeballing before writing: the two sources disagree.
-          conflict: Boolean(fromIdentity && fromPosts && fromIdentity !== fromPosts),
-        };
-      });
-    const fixableUids = missingUids.filter((r) => r.uid);
-
     /* --------------------------------- blocks --------------------------------- */
 
     // Blocking is enforced in two places that never talk to each other: the
@@ -1055,7 +1003,6 @@ export default function AdminPage() {
       if (s.uid) devicesByUid.set(s.uid, (devicesByUid.get(s.uid) ?? 0) + 1);
     }
     const emailOfUid = new Map<string, string>();
-    for (const id of data.identities) if (id.email) emailOfUid.set(id.uid, id.email);
     for (const u of data.users) if (u.uid) emailOfUid.set(u.uid, u.email);
 
     // Display name -> every uid ever seen carrying it. More than one means the
@@ -1145,11 +1092,6 @@ export default function AdminPage() {
       label,
       v: live.filter((p) => p.timestamp!.getDay() === i).length,
     }));
-
-    // cumulative legacy visitor growth
-    const legacyMonthly = byMonth(data.legacy);
-    let acc = 0;
-    const legacyGrowth = legacyMonthly.map((x) => ({ label: x.label, v: (acc += x.v) }));
 
     // cumulative posts growth
     const postsMonthly = byMonth(postDates);
@@ -1262,8 +1204,6 @@ export default function AdminPage() {
       dead,
       trashed,
       nameOf,
-      missingUids,
-      fixableUids,
       blockEdges,
       brokenBlocks,
       mutualBlocks,
@@ -1273,7 +1213,6 @@ export default function AdminPage() {
       perDay,
       hourHist,
       weekdayHist,
-      legacyGrowth,
       postsGrowth,
       postsMonthly,
       commentsMonthly: byMonth(
@@ -1412,7 +1351,7 @@ export default function AdminPage() {
     try {
       await deleteDoc(doc(db, "pushSubscriptions", s.id));
       setData((d) => d && { ...d, subs: d.subs.filter((x) => x.id !== s.id) });
-      log("remove-device", `${m?.nameOf(s.uid) ?? s.uid ?? "unknown"} · ${new URL(s.endpoint).hostname}`);
+      log("remove-device", `${m?.nameOf(s.uid) ?? s.uid ?? "unknown"} · ${endpointHost(s.endpoint)}`);
     } catch (e) {
       handleActionError(e);
     }
@@ -1424,6 +1363,11 @@ export default function AdminPage() {
       u.username
     )?.trim();
     if (!next || next === u.username || !data) return;
+    const problem = validateUsername(next);
+    if (problem) {
+      alert(problem);
+      return;
+    }
     if (
       data.users.some(
         (x) => x.email !== u.email && x.username.toLowerCase() === next.toLowerCase()
@@ -1508,92 +1452,6 @@ export default function AdminPage() {
           d && { ...d, users: d.users.map((x) => (x.email === u.email ? { ...x, muted } : x)) }
       );
       log(muted ? "mute-user" : "unmute-user", `${u.username} (${u.email})`);
-    } catch (e) {
-      handleActionError(e);
-    }
-  }
-
-  // Approve claims: credit each claimant as their post's owner — the same
-  // reassignment the feed's assign flow performs — then clear every pending
-  // claim on those posts, since ownership is now settled (competing claims
-  // for the same post are resolved together). At most one claimant per post.
-  async function approveClaims(claims: Claim[]) {
-    if (!data || !claims.length) return;
-    const existingPosts = new Set(data.photos.map((p) => p.id));
-    const byPost = new Map<string, Claim>();
-    for (const c of claims) if (c.uid && !byPost.has(c.postId)) byPost.set(c.postId, c);
-    if (!byPost.size) return;
-    try {
-      // Only reassign posts that still exist — a claim on a hard-deleted post
-      // just clears (a merge-write would otherwise try to recreate the doc).
-      for (const c of byPost.values()) {
-        if (!existingPosts.has(c.postId)) continue;
-        await setDoc(
-          doc(db, "photos", c.postId),
-          { userUUID: c.uid, username: c.username },
-          { merge: true }
-        );
-      }
-      const approvedPosts = new Set(byPost.keys());
-      const resolved = data.claims.filter((c) => approvedPosts.has(c.postId));
-      for (const c of resolved) await deleteDoc(doc(db, "claims", c.id));
-      const resolvedIds = new Set(resolved.map((c) => c.id));
-      setData(
-        (d) =>
-          d && {
-            ...d,
-            claims: d.claims.filter((c) => !resolvedIds.has(c.id)),
-            photos: d.photos.map((p) => {
-              const win = byPost.get(p.id);
-              return win ? { ...p, userUUID: win.uid, username: win.username } : p;
-            }),
-          }
-      );
-      for (const c of byPost.values())
-        log("approve-claim", `${c.username} (${c.email}) → ${c.postId}`);
-    } catch (e) {
-      handleActionError(e);
-    }
-  }
-
-  // Decline claims: drop the requests. The posts stay Anonymous, untouched.
-  async function declineClaims(claims: Claim[]) {
-    if (!data || !claims.length) return;
-    try {
-      for (const c of claims) await deleteDoc(doc(db, "claims", c.id));
-      const ids = new Set(claims.map((c) => c.id));
-      setData((d) => d && { ...d, claims: d.claims.filter((c) => !ids.has(c.id)) });
-      for (const c of claims) log("decline-claim", `${c.username} (${c.email}) ✗ ${c.postId}`);
-    } catch (e) {
-      handleActionError(e);
-    }
-  }
-
-  // Write the recovered uid onto each users doc that's missing one. Only the
-  // admin can write another member's doc (freshAdmin), which is why this lives
-  // here rather than running automatically in the app.
-  async function backfillUids() {
-    if (!m || !m.fixableUids.length) return;
-    const lines = m.fixableUids
-      .map((r) => `  ${r.user.username} (${r.user.email}) → ${r.uid} [${r.source}]`)
-      .join("\n");
-    if (!confirm(`Write uid onto ${m.fixableUids.length} user doc(s)?\n\n${lines}`)) return;
-    try {
-      let done = 0;
-      for (const r of m.fixableUids) {
-        await setDoc(doc(db, "users", r.user.uid ?? r.uid!), { uid: r.uid }, { merge: true });
-        log("backfill-uid", `${r.user.username} (${r.user.email}) → ${r.uid} [${r.source}]`);
-        done++;
-      }
-      const fixed = new Map(m.fixableUids.map((r) => [r.user.email, r.uid!]));
-      setData(
-        (d) =>
-          d && {
-            ...d,
-            users: d.users.map((u) => (fixed.has(u.email) ? { ...u, uid: fixed.get(u.email)! } : u)),
-          }
-      );
-      alert(`Backfilled ${done} uid${done === 1 ? "" : "s"}.`);
     } catch (e) {
       handleActionError(e);
     }
@@ -1868,8 +1726,6 @@ export default function AdminPage() {
     subsByUid.set(k, [...(subsByUid.get(k) ?? []), s]);
   }
 
-  const photoById = new Map(data.photos.map((p) => [p.id, p] as const));
-
   const engagement = m.live.length
     ? ((m.totalLikes + data.comments.length) / m.live.length).toFixed(1)
     : "—";
@@ -1879,7 +1735,6 @@ export default function AdminPage() {
 
   const NAV: { id: TabId; label: string; badge?: number }[] = [
     { id: "overview", label: "Overview" },
-    { id: "approvals", label: "Approvals", badge: data.claims.length || undefined },
     { id: "analytics", label: "Analytics" },
     { id: "leaderboards", label: "Leaderboards" },
     { id: "members", label: "Members", badge: data.feedback.length || undefined },
@@ -1891,13 +1746,6 @@ export default function AdminPage() {
   // Anything sitting in a queue gets surfaced on Overview rather than waiting
   // to be found in a tab.
   const attention: { id: TabId; label: string; n: number; tone: "warn" | "bad" | "white" }[] = [];
-  if (data.claims.length)
-    attention.push({
-      id: "approvals",
-      label: `post claim${data.claims.length === 1 ? "" : "s"} awaiting review`,
-      n: data.claims.length,
-      tone: "warn",
-    });
   if (data.feedback.length)
     attention.push({
       id: "members",
@@ -1945,15 +1793,10 @@ export default function AdminPage() {
 
   const memberName = (u: U) => (
     <span className="flex items-center gap-1.5">
-      {u.uid ? (
-        <Link href={`/u/${u.uid}`} target="_blank" className="truncate font-semibold hover:underline">
-          {u.username}
-        </Link>
-      ) : (
-        <span className="truncate font-semibold">{u.username}</span>
-      )}
+      <Link href={`/u/${u.uid}`} target="_blank" className="truncate font-semibold hover:underline">
+        {u.username}
+      </Link>
       {u.muted && <Pill tone="bad">Muted</Pill>}
-      {!u.uid && <Pill tone="warn">No uid</Pill>}
     </span>
   );
 
@@ -2233,202 +2076,6 @@ export default function AdminPage() {
                   </Section>
                 </div>
               </>
-            )}
-
-            {/* ------------------------------- approvals ------------------------------- */}
-            {tab === "approvals" && (
-              <Section
-                title="Post claims"
-                count={data.claims.length}
-                desc="Members asking to be credited as the owner of an Anonymous post. Approving reassigns the post to them; declining leaves it Anonymous."
-                right={
-                  data.claims.length > 0 ? (
-                    <>
-                      <button
-                        onClick={() => {
-                          if (!confirm(`Approve ALL ${data.claims.length} pending claims?`)) return;
-                          approveClaims(data.claims);
-                          setSelectedClaims(new Set());
-                        }}
-                        className={btn}
-                      >
-                        Approve all
-                      </button>
-                      <button
-                        onClick={() => {
-                          if (!confirm(`Decline ALL ${data.claims.length} pending claims?`)) return;
-                          declineClaims(data.claims);
-                          setSelectedClaims(new Set());
-                        }}
-                        className={btnDanger}
-                      >
-                        Decline all
-                      </button>
-                    </>
-                  ) : undefined
-                }
-                flush
-              >
-                {data.claims.length === 0 ? (
-                  <div className="p-4">
-                    <Empty>
-                      No pending claims. Members can claim Anonymous posts from the feed.
-                    </Empty>
-                  </div>
-                ) : (
-                  <>
-                    <div className="flex flex-wrap items-center gap-2 border-b-[0.5px] border-field px-4 py-3">
-                      <button
-                        onClick={() =>
-                          setSelectedClaims((s) =>
-                            data.claims.every((c) => s.has(c.id))
-                              ? new Set()
-                              : new Set(data.claims.map((c) => c.id))
-                          )
-                        }
-                        className={btn}
-                      >
-                        {data.claims.every((c) => selectedClaims.has(c.id))
-                          ? "Unselect all"
-                          : "Select all"}
-                      </button>
-                      {selectedClaims.size > 0 ? (
-                        <>
-                          <span className="text-[11px] tabular-nums text-mut">
-                            {selectedClaims.size} selected
-                          </span>
-                          <span className="ml-auto flex gap-2">
-                            <button
-                              onClick={() => {
-                                const sel = data.claims.filter((c) => selectedClaims.has(c.id));
-                                if (
-                                  !confirm(
-                                    `Approve ${sel.length} claim${sel.length === 1 ? "" : "s"} and credit each claimant as the post owner?`
-                                  )
-                                )
-                                  return;
-                                approveClaims(sel);
-                                setSelectedClaims(new Set());
-                              }}
-                              className={btnPrimary}
-                            >
-                              Approve selected
-                            </button>
-                            <button
-                              onClick={() => {
-                                const sel = data.claims.filter((c) => selectedClaims.has(c.id));
-                                if (
-                                  !confirm(
-                                    `Decline ${sel.length} claim${sel.length === 1 ? "" : "s"}?`
-                                  )
-                                )
-                                  return;
-                                declineClaims(sel);
-                                setSelectedClaims(new Set());
-                              }}
-                              className={btnDanger}
-                            >
-                              Decline selected
-                            </button>
-                            <button onClick={() => setSelectedClaims(new Set())} className={btn}>
-                              Clear
-                            </button>
-                          </span>
-                        </>
-                      ) : (
-                        <span className="text-[11px] text-dim">
-                          Select claims to act on several at once.
-                        </span>
-                      )}
-                    </div>
-                    {data.claims.map((c) => {
-                      const post = photoById.get(c.postId);
-                      const dupes = data.claims.filter((x) => x.postId === c.postId).length;
-                      return (
-                        <Row
-                          key={c.id}
-                          lead={
-                            <>
-                              <Checkbox
-                                label={`Select ${c.username}'s claim`}
-                                checked={selectedClaims.has(c.id)}
-                                onChange={(on) =>
-                                  setSelectedClaims((s) => {
-                                    const next = new Set(s);
-                                    if (on) next.add(c.id);
-                                    else next.delete(c.id);
-                                    return next;
-                                  })
-                                }
-                              />
-                              {post?.imagePath ? (
-                                <Thumb path={post.imagePath} />
-                              ) : (
-                                <div className="h-11 w-11 shrink-0 rounded-lg bg-field" />
-                              )}
-                            </>
-                          }
-                          title={
-                            <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
-                              <span className="font-semibold">{c.username}</span>
-                              <span className="truncate text-dim">{c.email}</span>
-                              {dupes > 1 && <Pill tone="warn">{dupes} claim this</Pill>}
-                            </span>
-                          }
-                          meta={
-                            <>
-                              claims{" "}
-                              {post
-                                ? post.caption
-                                  ? `“${post.caption.slice(0, 40)}”`
-                                  : "a post"
-                                : "a deleted post"}{" "}
-                              · {fmtDateTime(c.at)}
-                            </>
-                          }
-                          actions={
-                            <>
-                              <button
-                                onClick={() => {
-                                  if (
-                                    !confirm(
-                                      `Approve — credit ${c.username} as the owner of this post?`
-                                    )
-                                  )
-                                    return;
-                                  approveClaims([c]);
-                                  setSelectedClaims((s) => {
-                                    const n = new Set(s);
-                                    n.delete(c.id);
-                                    return n;
-                                  });
-                                }}
-                                className={btn}
-                              >
-                                Approve
-                              </button>
-                              <button
-                                onClick={() => {
-                                  if (!confirm(`Decline ${c.username}'s claim?`)) return;
-                                  declineClaims([c]);
-                                  setSelectedClaims((s) => {
-                                    const n = new Set(s);
-                                    n.delete(c.id);
-                                    return n;
-                                  });
-                                }}
-                                className={btnDanger}
-                              >
-                                Decline
-                              </button>
-                            </>
-                          }
-                        />
-                      );
-                    })}
-                  </>
-                )}
-              </Section>
             )}
 
             {/* ------------------------------- analytics ------------------------------- */}
@@ -3113,12 +2760,6 @@ export default function AdminPage() {
                   desc="Rows the app can't show and records it can't resolve. Sweeping is permanent."
                   right={
                     <>
-                      {m.fixableUids.length > 0 && (
-                        <button onClick={backfillUids} className={btn}>
-                          Backfill {m.fixableUids.length} uid
-                          {m.fixableUids.length === 1 ? "" : "s"}
-                        </button>
-                      )}
                       {m.dead.length > 0 && (
                         <button onClick={sweepDeadDocs} className={btnDanger}>
                           Delete {m.dead.length} dead docs
@@ -3158,41 +2799,8 @@ export default function AdminPage() {
                     />
                     <Stat label="Total photo docs" value={data.photos.length} />
                     <Stat label="Total comment docs" value={data.comments.length} />
-                    <Stat
-                      label="Users missing uid"
-                      value={m.missingUids.length}
-                      sub={
-                        m.missingUids.length
-                          ? `${m.fixableUids.length} recoverable`
-                          : "everyone resolvable"
-                      }
-                      tone={m.missingUids.length ? "gold" : undefined}
-                    />
                     <Stat label="Muted members" value={mutedCount} />
                   </div>
-                  {m.missingUids.length > 0 && (
-                    <>
-                      <Rule label="Members missing a uid" />
-                      <div className="flex flex-col gap-1">
-                        {m.missingUids.map((r) => (
-                          <p key={r.user.email} className="text-[11.5px] text-mut">
-                            <span className="font-semibold text-white">{r.user.username}</span>{" "}
-                            <span className="text-dim">{r.user.email}</span>{" "}
-                            {r.uid ? (
-                              <span className={r.conflict ? "text-warn" : "text-ok"}>
-                                → {r.uid.slice(0, 10)}… via {r.source}
-                                {r.conflict && " (sources disagree — verify first)"}
-                              </span>
-                            ) : (
-                              <span className="text-dim">
-                                → no source; they must sign in once, or add it by hand
-                              </span>
-                            )}
-                          </p>
-                        ))}
-                      </div>
-                    </>
-                  )}
                 </Section>
 
                 <Section
@@ -3220,7 +2828,7 @@ export default function AdminPage() {
                           }
                           meta={
                             <>
-                              {new URL(s.endpoint).hostname} · updated {fmtDate(s.updatedAt)}
+                              {endpointHost(s.endpoint)} · updated {fmtDate(s.updatedAt)}
                             </>
                           }
                           actions={

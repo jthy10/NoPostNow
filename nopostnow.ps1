@@ -15,7 +15,9 @@ $Runtime = Join-Path $PSScriptRoot ".runtime\node"
 
 function Test-Node([string]$Exe) {
   try {
-    & $Exe -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a>22||(a===22&&b>=18)?0:1)' 2>$null
+    # No double quotes inside the script: Windows PowerShell strips them from
+    # arguments passed to other programs.
+    & $Exe -e "const [a,b]=process.versions.node.split('.').map(Number);process.exit(a>22||(a===22&&b>=18)?0:1)" 2>$null
     return $LASTEXITCODE -eq 0
   } catch {
     return $false
@@ -49,8 +51,10 @@ if ((Test-Path $localNode) -and (Test-Node $localNode)) {
   $env:Path = "$Runtime;$env:Path"
 }
 
-if (-not (Test-Path "node_modules")) {
-  Write-Host "Installing dependencies (one time) ..."
+# Installed once, and again whenever an update changes what is needed.
+$installed = "node_modules\.package-lock.json"
+if (-not (Test-Path $installed) -or (Get-Item "package-lock.json").LastWriteTime -gt (Get-Item $installed).LastWriteTime) {
+  Write-Host "Installing dependencies ..."
   npm ci --no-audit --no-fund
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
