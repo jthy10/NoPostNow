@@ -10,6 +10,7 @@ import {
   readArchive,
   readStoredArchive,
   saveArchive,
+  watchArchive,
 } from "@/lib/feed-cache";
 import { estimateCardHeight, postDate, isMomentPost, type Post } from "@/lib/posts";
 import { dailyMomentLabel, site } from "@/lib/site";
@@ -48,7 +49,8 @@ export default function BrowsePage() {
   const [sort, setSort] = useState<SortMode>("new");
   const [activeComments, setActiveComments] = useState<Post | null>(null);
   const [commentBumps, setCommentBumps] = useState<Record<string, number>>({});
-  const { hidden } = useBlockSets(user?.uid);
+  const { hidden, ready: blocksReady } = useBlockSets(user?.uid);
+  // Held back until the block lists land, so a blocked person never flashes.
   // The scroller is held in state, not a ref: this page renders a loading
   // screen first, so the element doesn't exist on the first render and a ref
   // would never tell the windowing hook that it eventually appeared.
@@ -68,6 +70,14 @@ export default function BrowsePage() {
     if (!loading && !user) router.replace("/login");
   }, [loading, user, router]);
 
+  // Bumped when the shared archive is invalidated, or the app comes back to
+  // the foreground with an aging copy — the load below then runs again.
+  const [reloads, setReloads] = useState(0);
+  useEffect(() => {
+    if (!user) return;
+    return watchArchive(() => setReloads((n) => n + 1));
+  }, [user]);
+
   // The whole archive in one query — cached for the session, so coming back
   // to Browse (or bouncing out to a post and back) is free. Cold launches
   // paint instantly from the persistent copy of the last visit while the
@@ -83,8 +93,9 @@ export default function BrowsePage() {
       // Instant paint from the device cache while the fresh query runs. The
       // fetch is shared with the profile like standings, so whichever page ran
       // first this session has already paid for it.
-      const stored = readStoredArchive();
-      if (stored) setPosts(stored);
+      // Only onto an empty screen: after an invalidation the list already up
+      // is newer than the device copy, and swapping it in would step back.
+      setPosts((current) => current ?? readStoredArchive());
     }
     let cancelled = false;
     fetchArchive()
@@ -96,12 +107,12 @@ export default function BrowsePage() {
     return () => {
       cancelled = true;
     };
-  }, [user]);
+  }, [user, reloads]);
 
   // Member chips, busiest posters first. Username (not uid) is the filter
   // key so legacy Anonymous posts stay browsable too.
   const members = useMemo(() => {
-    if (!posts) return [];
+    if (!posts || !blocksReady) return [];
     const counts = new Map<string, number>();
     for (const p of posts) {
       if (p.userUUID && hidden.has(p.userUUID)) continue;
@@ -110,12 +121,12 @@ export default function BrowsePage() {
       counts.set(name, (counts.get(name) ?? 0) + 1);
     }
     return [...counts.entries()].sort((a, b) => b[1] - a[1]);
-  }, [posts, hidden, onlyMoment]);
+  }, [posts, hidden, onlyMoment, blocksReady]);
 
   // One flat, sorted list — newest/oldest flips the whole feed by time, most-
   // liked ranks by like count (ties fall back to newest so the order is stable).
   const visiblePosts = useMemo(() => {
-    if (!posts) return [];
+    if (!posts || !blocksReady) return [];
     const filtered = posts.filter(
       (p) =>
         (!p.userUUID || !hidden.has(p.userUUID)) &&
@@ -130,7 +141,7 @@ export default function BrowsePage() {
     }
     const dir = sort === "old" ? 1 : -1;
     return [...filtered].sort((a, b) => dir * (time(a) - time(b)));
-  }, [posts, who, sort, hidden, onlyMoment]);
+  }, [posts, who, sort, hidden, onlyMoment, blocksReady]);
 
   // Cards unmount when they leave the window, taking their optimistic like
   // state with them — so the list keeps the authoritative copy. Also keeps the
@@ -258,7 +269,7 @@ export default function BrowsePage() {
 
             {/* First-ever load (nothing cached yet): skeleton cards instead
                 of a bare "Loading" line, so the page has its shape at once. */}
-            {posts === null && (
+            {(posts === null || !blocksReady) && (
               <div className="px-2.5" aria-hidden>
                 {[0, 1, 2].map((i) => (
                   <div key={i} className="border-b-[0.5px] border-field pb-3 pt-2.5">
@@ -272,7 +283,7 @@ export default function BrowsePage() {
               </div>
             )}
 
-            {posts !== null && visiblePosts.length === 0 && (
+            {posts !== null && blocksReady && visiblePosts.length === 0 && (
               <p className="py-10 text-center text-sm text-mut">
                 {onlyMoment
                   ? `No ${dailyMomentLabel()} posts yet — catch the clock at ${dailyMomentLabel()} to land one here.`

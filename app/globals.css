@@ -10,8 +10,8 @@
   --color-line: #1e1e1e; /* nav hairlines */
   --color-edge: #2a2a2a; /* input borders, avatar rings */
   --color-body: #cccccc; /* captions, comment text */
-  --color-mut: #555555; /* icons, secondary text */
-  --color-dim: #444444; /* faintest decorative text */
+  --color-mut: #8c8c8c; /* icons, secondary text — 5.9:1 on canvas, 5.1:1 on fields (WCAG AA) */
+  --color-dim: #838383; /* faintest text — 5.2:1 on canvas, 4.6:1 on fields (WCAG AA) */
   --color-meta: #8a8a8a; /* timestamps — 5.7:1 on canvas, clears WCAG AA */
   --color-heart: var(--accent, #ff3b5c);
   /* Admin status colors — success / warning / danger, one source of truth */
@@ -89,12 +89,6 @@ body {
   0% { transform: scale(1); }
   40% { transform: scale(1.35); }
   100% { transform: scale(1); }
-}
-
-/* Rotate-your-phone hint on the landscape overlay */
-@keyframes wiggle {
-  0%, 100% { transform: rotate(-10deg); }
-  50% { transform: rotate(10deg); }
 }
 
 /* Green check pops in when notifications get enabled */

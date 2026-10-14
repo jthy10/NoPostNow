@@ -94,7 +94,9 @@ export default function PostPage({
       <ViewportShell>
       <PageHeader backHref="/" title="Post" />
 
-      <main className="mx-auto min-h-0 w-full max-w-lg flex-1 overflow-y-auto overscroll-contain pt-[calc(52px+env(safe-area-inset-top))]">
+      {/* Full-width scroller: in landscape the blank space beside the column scrolls too. */}
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      <main className="mx-auto w-full max-w-lg pt-[calc(52px+env(safe-area-inset-top))]">
         {resolving && (
           <p className="py-10 text-center text-[11px] font-semibold uppercase tracking-[2px] text-dim">
             Loading
@@ -124,6 +126,7 @@ export default function PostPage({
           />
         )}
       </main>
+      </div>
 
       <BottomNav onCapture={setCapturedFile} />
       </ViewportShell>

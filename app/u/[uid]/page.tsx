@@ -1,6 +1,7 @@
 "use client";
 
 import { use, useEffect, useRef, useState } from "react";
+import { useDialog } from "@/lib/sheet";
 import { useRouter } from "next/navigation";
 import { db, collection, getDocs, query, where } from "@/lib/store";
 import { useAuth } from "@/lib/auth-context";
@@ -36,9 +37,9 @@ export default function UserProfilePage({
   const { uid: profileUid } = use(params);
   const { user, username, loading } = useAuth();
   const router = useRouter();
-  const scrollRef = useRef<HTMLElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const meta = useUserByUid(profileUid);
-  const { blocked, blockedBy, hidden } = useBlockSets(user?.uid);
+  const { blocked, blockedBy, hidden, ready: blocksReady } = useBlockSets(user?.uid);
   const podium = usePodium(user?.uid);
   const streaks = useStreaks(user?.uid);
   const [posts, setPosts] = useState<Post[] | null>(null);
@@ -48,6 +49,8 @@ export default function UserProfilePage({
   const [activeComments, setActiveComments] = useState<Post | null>(null);
   const [commentBumps, setCommentBumps] = useState<Record<string, number>>({});
   const [showActions, setShowActions] = useState(false);
+  const actionsRef = useRef<HTMLDivElement>(null);
+  useDialog(actionsRef, () => setShowActions(false), showActions);
   const [blockBusy, setBlockBusy] = useState(false);
 
   const iBlockedThem = blocked.has(profileUid);
@@ -102,7 +105,7 @@ export default function UserProfilePage({
     );
     observer.observe(el);
     return () => observer.disconnect();
-  }, [posts, visible]);
+  }, [posts, visible, blocksReady]);
 
   async function handleBlockToggle() {
     if (!user || blockBusy) return;
@@ -119,7 +122,9 @@ export default function UserProfilePage({
     }
   }
 
-  if (loading || !user || user.uid === profileUid) {
+  // Until the block lists land, "who blocked who" is unknown — showing the
+  // profile first would flash a blocked person's posts.
+  if (loading || !user || user.uid === profileUid || !blocksReady) {
     return (
       <div className="fixed inset-0 flex items-center justify-center text-sm font-semibold uppercase tracking-[2px] text-mut">
         Loading
@@ -166,7 +171,9 @@ export default function UserProfilePage({
       <ViewportShell>
       <TopNav scrollRef={scrollRef} />
 
-      <main ref={scrollRef} className="mx-auto min-h-0 w-full max-w-lg flex-1 overflow-y-auto overscroll-contain pb-8 pt-[calc(52px+env(safe-area-inset-top))]">
+      {/* Full-width scroller: in landscape the blank space beside the column scrolls too. */}
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      <main className="mx-auto w-full max-w-lg pb-8 pt-[calc(52px+env(safe-area-inset-top))]">
         <div className="flex flex-col items-center border-b-[0.5px] border-field px-5 pb-5 pt-7">
           <Avatar
             username={profileName ?? "?"}
@@ -291,6 +298,7 @@ export default function UserProfilePage({
           </>
         )}
       </main>
+      </div>
 
       <BottomNav onCapture={setCapturedFile} />
       </ViewportShell>
@@ -301,7 +309,12 @@ export default function UserProfilePage({
           onClick={() => setShowActions(false)}
         >
           <div
-            className="animate-[sheet-up_0.25s_ease-out] rounded-t-[14px] bg-[#1c1c1e] pb-[calc(32px+env(safe-area-inset-bottom))] pt-2"
+            ref={actionsRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label={`${profileName ?? "Member"} options`}
+            tabIndex={-1}
+            className="animate-[sheet-up_0.25s_ease-out] rounded-t-[14px] bg-[#1c1c1e] pb-[calc(32px+env(safe-area-inset-bottom))] pt-2 outline-none"
             onClick={(e) => e.stopPropagation()}
           >
             {!iBlockedThem && (

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { ApiError } from "./api";
 import { downloadFile } from "./files";
 import { displayVariantPath } from "./posts";
 
@@ -95,8 +96,15 @@ export function useAuthedImage(path: string | null | undefined, preferDisplay = 
           cache.set(candidate, { url, refs: 1, usedAt: Date.now() });
           take(candidate, url);
           return;
-        } catch {
-          if (candidate !== path) missingVariants.add(candidate);
+        } catch (e) {
+          // Only a display copy that truly doesn't exist falls back to the
+          // full-size original. A blip — offline, a timeout — must not pin
+          // this card to the big file for the rest of the session; it shows
+          // the placeholder and the next mount asks for the small copy again.
+          if (candidate !== path) {
+            if (!(e instanceof ApiError && e.status === 404)) break;
+            missingVariants.add(candidate);
+          }
         }
       }
       if (!cancelled) setSrc(null);

@@ -7,6 +7,7 @@ import { fetchPosts, invalidateAllCommentPreviews, type Post } from "@/lib/posts
 import { useBlockSets } from "@/lib/blocks";
 import { invalidateAvatarMap } from "@/lib/users";
 import {
+  feedIsStale,
   invalidateFeedCache,
   readFeedSnapshot,
   saveFeedSnapshot,
@@ -30,6 +31,23 @@ import { isSpecialDate, specialDateLabel } from "@/lib/site";
 // The post sitting under the scroller's top edge, and how far past it we've
 // scrolled — the pair that says "here" in a way that survives everything
 // above it changing height.
+const postMillis = (p: Post) => p.timestamp?.toDate().getTime() ?? 0;
+
+// Lays a fresh top page over the list already on screen. New posts go on top,
+// posts in the fresh page's time span replace their old copies (likes,
+// captions), and ones missing from that span were deleted. Everything older
+// than the fresh page stays as it was, so the cursor and the reader's place
+// further down are untouched. No overlap at all means more is new than one
+// page holds: start over from the fresh page.
+function mergeTop(current: Post[], fresh: Post[], freshIsAll: boolean): Post[] | null {
+  if (fresh.length === 0) return freshIsAll ? [] : current;
+  const freshIds = new Set(fresh.map((p) => p.id));
+  if (!current.some((p) => freshIds.has(p.id))) return null;
+  const floor = freshIsAll ? -Infinity : postMillis(fresh[fresh.length - 1]);
+  const older = current.filter((p) => !freshIds.has(p.id) && postMillis(p) < floor);
+  return [...fresh, ...older];
+}
+
 function readAnchor(scroller: HTMLElement | null) {
   if (!scroller) return {};
   const edge = scroller.getBoundingClientRect().top;
@@ -73,7 +91,9 @@ export default function FeedPage() {
   useEffect(() => {
     latest.current = { posts, cursor, hasMore };
   });
-  const { blocked, hidden } = useBlockSets(user?.uid);
+  const { blocked, hidden, ready: blocksReady } = useBlockSets(user?.uid);
+  // Nothing renders until the block lists have landed: filtering against an
+  // empty set first would flash a blocked person's posts for a beat.
 
   useEffect(() => {
     if (!loading && !user) router.replace("/login");
@@ -82,15 +102,26 @@ export default function FeedPage() {
   // Bumped by every reload from the top, so a page that was still on its way
   // when the list was replaced is dropped instead of appended to the new one.
   const generation = useRef(0);
+  // When the top of the list was last read from the server.
+  const checkedAt = useRef(0);
 
-  const loadMore = useCallback(async () => {
-    if (fetching || !hasMore) return;
+  // Which fetch last failed, so the retry repeats the right one. While set,
+  // the scroll sentinel stops asking: every fetching flip rebuilds its
+  // observer, which fires straight away, and offline that would be a loop.
+  const [failed, setFailed] = useState<"more" | "refresh" | null>(null);
+
+  // `retry` is the button's way past the failed latch; the sentinel never
+  // passes it.
+  const loadMore = useCallback(async (retry = false) => {
+    if (fetching || !hasMore || (failed && !retry)) return;
     const started = generation.current;
     setFetching(true);
+    setFailed(null);
     try {
       const { posts: next, nextCursor } = await fetchPosts(cursor);
       if (started !== generation.current) return;
       seeded.current = true;
+      if (!cursor) checkedAt.current = Date.now();
       // Dedupe on append: StrictMode's double-mount (and any rapid sentinel
       // re-trigger) can land two overlapping fetches before `fetching` commits.
       setPosts((prev) => {
@@ -100,28 +131,59 @@ export default function FeedPage() {
       setCursor(nextCursor);
       setHasMore(Boolean(nextCursor));
     } catch {
-      // A failed page is simply asked for again on the next scroll.
+      if (started === generation.current) setFailed("more");
     } finally {
       if (started === generation.current) setFetching(false);
     }
-  }, [cursor, fetching, hasMore]);
+  }, [cursor, fetching, hasMore, failed]);
 
   // Reload from the top (after posting a new photo, or pull-to-refresh).
   const refresh = useCallback(async () => {
     const started = ++generation.current;
     setFetching(true);
+    setFailed(null);
     try {
       const { posts: next, nextCursor } = await fetchPosts();
       if (started !== generation.current) return;
       seeded.current = true;
+      checkedAt.current = Date.now();
       setPosts(next);
       setCursor(nextCursor);
       setHasMore(Boolean(nextCursor));
       scrollRef.current?.scrollTo({ top: 0 });
     } catch {
-      // Offline or a blip: keep what is on screen.
+      // Offline or a blip: keep what is on screen, and offer a retry.
+      if (started === generation.current) setFailed("refresh");
     } finally {
       if (started === generation.current) setFetching(false);
+    }
+  }, []);
+
+  // Quietly re-reads the top page and folds it into what's on screen — for a
+  // restored snapshot that has aged, and for the app coming back to the
+  // foreground. Unlike refresh() it keeps the reader's place; a failure just
+  // leaves the list as it was.
+  const checkForNew = useCallback(async () => {
+    const started = generation.current;
+    try {
+      const { posts: top, nextCursor } = await fetchPosts();
+      if (started !== generation.current) return;
+      checkedAt.current = Date.now();
+      const merged = mergeTop(latest.current.posts, top, !nextCursor);
+      if (merged) {
+        setPosts(merged);
+        if (!nextCursor) {
+          setCursor(undefined);
+          setHasMore(false);
+        }
+      } else {
+        // More new posts than a page — the old list can't be stitched on.
+        setPosts(top);
+        setCursor(nextCursor);
+        setHasMore(Boolean(nextCursor));
+      }
+    } catch {
+      // Offline — what's on screen stands.
     }
   }, []);
 
@@ -156,6 +218,10 @@ export default function FeedPage() {
       setPosts(snap.posts);
       setCursor(snap.cursor);
       setHasMore(snap.hasMore);
+      checkedAt.current = snap.checkedAt;
+      // A snapshot that's been sitting a while also checks the top for
+      // anything posted since.
+      if (feedIsStale(snap.checkedAt)) void checkForNew();
     } else {
       loadMore();
     }
@@ -230,16 +296,30 @@ export default function FeedPage() {
         ...lastAnchor.current,
         scrollTop: lastScrollTop.current,
         uid,
+        checkedAt: checkedAt.current,
       });
     };
   }, [user]);
+
+  // A phone keeps the feed mounted for days. Coming back to it after a while
+  // should show what was posted meanwhile, not the morning's list.
+  useEffect(() => {
+    if (!user) return;
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (!seeded.current || !feedIsStale(checkedAt.current)) return;
+      void checkForNew();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [user, checkForNew]);
 
   useEffect(() => {
     const el = sentinelRef.current;
     if (!el) return;
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting) loadMore();
+        if (entries[0].isIntersecting) void loadMore();
       },
       { root: scrollRef.current }
     );
@@ -250,8 +330,8 @@ export default function FeedPage() {
   // Blocking is mutual invisibility — filter at render so the cached list
   // stays intact and an unblock brings posts back instantly.
   const visiblePosts = useMemo(
-    () => posts.filter((p) => !p.userUUID || !hidden.has(p.userUUID)),
-    [posts, hidden]
+    () => (blocksReady ? posts.filter((p) => !p.userUUID || !hidden.has(p.userUUID)) : []),
+    [posts, hidden, blocksReady]
   );
 
   if (loading || !user) {
@@ -320,19 +400,33 @@ export default function FeedPage() {
 
         <div ref={sentinelRef} className="h-10" />
 
-        {fetching && (
+        {(fetching || (!blocksReady && posts.length > 0)) && (
           <p className="pb-6 text-center text-[11px] font-semibold uppercase tracking-[2px] text-dim">
             Loading
           </p>
         )}
 
-        {!hasMore && visiblePosts.length > 0 && (
+        {failed && !fetching && (
+          <div className="flex flex-col items-center gap-3 pb-8">
+            <p className="text-[11px] font-semibold uppercase tracking-[2px] text-meta">
+              Couldn&apos;t load posts
+            </p>
+            <button
+              onClick={() => (failed === "refresh" ? refresh() : loadMore(true))}
+              className="rounded-lg border-[0.5px] border-edge px-5 py-2 text-[11px] font-bold uppercase tracking-[1.5px] text-mut transition-colors hover:border-mut hover:text-white"
+            >
+              Try again
+            </button>
+          </div>
+        )}
+
+        {!failed && !hasMore && visiblePosts.length > 0 && (
           <p className="pb-8 text-center text-[11px] font-semibold uppercase tracking-[2px] text-dim">
             You&apos;re all caught up
           </p>
         )}
 
-        {!hasMore && visiblePosts.length === 0 && (
+        {!failed && !hasMore && blocksReady && visiblePosts.length === 0 && (
           <p className="py-10 text-center text-sm text-mut">
             {blocked.size > 0 ? "No posts to show." : "No posts yet."}
           </p>

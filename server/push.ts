@@ -1,6 +1,7 @@
 import webpush from "web-push";
 import { inQuietHours } from "../lib/quiet-hours.ts";
 import { config } from "./runtime.ts";
+import { PUSH_SERVICE } from "./rules.ts";
 import { getDoc, listCollection, removeDoc, type Data } from "./store.ts";
 
 // Web push delivery. Sending runs entirely on the server, which is the only
@@ -22,7 +23,9 @@ function wants(prefs: Data | undefined, kind: PushKind): boolean {
   return !inQuietHours(
     typeof prefs.quietStart === "number" ? prefs.quietStart : null,
     typeof prefs.quietEnd === "number" ? prefs.quietEnd : null,
-    typeof prefs.tz === "string" ? prefs.tz : config().timeZone
+    typeof prefs.tz === "string" ? prefs.tz : null,
+    new Date(),
+    config().timeZone
   );
 }
 
@@ -68,6 +71,11 @@ export async function sendPush(opts: {
       const uid = typeof sub.data.uid === "string" ? sub.data.uid : "";
       if (!uid || (targets && !targets.has(uid)) || opts.exclude?.has(uid)) return;
       if (!opts.ignorePrefs && !wants(getDoc(`notifPrefs/${uid}`)?.data, opts.kind)) return;
+      // Registered before endpoints were checked: never post anywhere else.
+      if (!PUSH_SERVICE.test(String(sub.data.endpoint))) {
+        removeDoc(sub.path);
+        return;
+      }
       try {
         await webpush.sendNotification(
           {
@@ -76,7 +84,9 @@ export async function sendPush(opts: {
           },
           body,
           // A push service that never answers must not hold the request open.
-          { timeout: 10_000 }
+          // A phone that was off doesn't get stale news when it comes back:
+          // the daily reminder is only worth half an hour, the rest a day.
+          { timeout: 10_000, TTL: opts.kind === "daily" ? 30 * 60 : 24 * 60 * 60 }
         );
         sent++;
       } catch (err) {

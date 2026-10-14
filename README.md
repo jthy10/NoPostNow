@@ -80,6 +80,7 @@ services. Everything lives in the data folder:
 | --- | --- |
 | Posts, accounts, messages | `nopostnow.db`, one SQLite file |
 | Photos | `files/`, served only to signed-in members |
+| Deleted photos | `deleted/`, only if the admin turns on **Keep deleted photos** (off by default) |
 | Settings | `config.json` |
 
 Every read and write is checked on the server by

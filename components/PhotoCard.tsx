@@ -20,6 +20,8 @@ import { useBlockSets } from "@/lib/blocks";
 import { useStreaks } from "@/lib/streaks";
 import { downloadFile } from "@/lib/files";
 import { dailyMomentLabel, specialDateLabel } from "@/lib/site";
+import { stampLabel } from "@/lib/dates";
+import { isSendEnter } from "@/lib/keys";
 import Avatar from "./Avatar";
 import StreakFlame from "./StreakFlame";
 
@@ -29,24 +31,7 @@ import StreakFlame from "./StreakFlame";
 function postDateTime(post: Post) {
   const d = badgeDate(post);
   if (!d) return "";
-  const time = d
-    .toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
-    .toUpperCase();
-
-  const now = new Date();
-  const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate());
-  const dayDiff = (startOfDay(now).getTime() - startOfDay(d).getTime()) / 86_400_000;
-  if (dayDiff === 0) return `TODAY ${time}`;
-  if (dayDiff === 1) return `YESTERDAY ${time}`;
-
-  const date = d
-    .toLocaleDateString(undefined, {
-      month: "short",
-      day: "numeric",
-      year: d.getFullYear() === now.getFullYear() ? undefined : "numeric",
-    })
-    .toUpperCase();
-  return `${date}, ${time}`;
+  return stampLabel(d);
 }
 
 const icon = {
@@ -107,6 +92,24 @@ export default function PhotoCard({
     : isMomentPost(post)
       ? dailyMomentLabel()
       : null;
+  // The glow is allowed over the header only while the card's top edge sits
+  // below it. Once the card scrolls under the bar it drops back beneath it —
+  // otherwise TopNav sliding back in on scroll-up lands underneath the photo.
+  const glowTopRef = useRef<HTMLDivElement>(null);
+  const [glowOverHeader, setGlowOverHeader] = useState(false);
+  useEffect(() => {
+    const top = glowTopRef.current;
+    if (!specialBadge || !top) return;
+    // offsetHeight ignores TopNav's hide transform, so this is the bar's
+    // full height (52px + safe area) whether it's showing or not.
+    const header = document.querySelector<HTMLElement>("[data-app-header]");
+    const io = new IntersectionObserver(
+      ([e]) => setGlowOverHeader(e.isIntersecting && e.intersectionRatio === 1),
+      { rootMargin: `-${header?.offsetHeight ?? 0}px 0px 0px 0px`, threshold: 1 }
+    );
+    io.observe(top);
+    return () => io.disconnect();
+  }, [specialBadge]);
   const { hidden } = useBlockSets(uid);
   // Days in a row the poster is on, if it's worth a flame. One shared tally
   // serves every card on the page (see lib/streaks).
@@ -245,11 +248,15 @@ export default function PhotoCard({
               // the glow spill over the header itself — above the nav
               // (z-40) but below the notch/status-bar backing (z-50), which
               // has to stay opaque for the clock/battery to stay readable.
-              "z-[45] animate-[moment-glow_3s_ease-in-out_infinite]"
+              // Only while the card is clear of the bar (see glowOverHeader).
+              `${glowOverHeader ? "z-[45] " : ""}animate-[moment-glow_3s_ease-in-out_infinite]`
             : ""
         }`}
         onPointerUp={handleImageTap}
       >
+        {specialBadge && (
+          <div ref={glowTopRef} aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-px" />
+        )}
         {specialBadge && (
           <div className="pointer-events-none absolute left-2.5 top-2.5 z-10 flex items-center gap-1 rounded-full bg-black/55 px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-[1.5px] text-[#ffd88a] ring-1 ring-[#ffd88a]/40 backdrop-blur-sm">
             <svg viewBox="0 0 24 24" className="h-3 w-3 fill-[#ffd88a]" aria-hidden>
@@ -375,7 +382,7 @@ export default function PhotoCard({
             value={captionDraft}
             onChange={(e) => setCaptionDraft(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") saveCaption();
+              if (isSendEnter(e)) saveCaption();
               if (e.key === "Escape") setCaptionDraft(null);
             }}
             maxLength={MAX_CAPTION_LENGTH}

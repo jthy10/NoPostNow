@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useDialog } from "@/lib/sheet";
 import { useRouter } from "next/navigation";
 import { db, collection, doc, getDocs, query, updateDoc, where } from "@/lib/store";
 import { signOut } from "@/lib/account";
 import { forgetPushSubscription } from "@/lib/push";
-import { downloadFile, uploadFile } from "@/lib/files";
+import { discardUpload, downloadFile, uploadFile } from "@/lib/files";
 import { useAuth } from "@/lib/auth-context";
 import { useAuthedImage } from "@/lib/use-authed-image";
 import { invalidateAvatarMap } from "@/lib/users";
@@ -14,7 +15,7 @@ import { countLikes, usePodium } from "@/lib/likes";
 import { useStreaks } from "@/lib/streaks";
 import { ADMIN_CHAT_HREF, useAdminChatUnread } from "@/lib/admin-chat";
 import { initials } from "@/components/Avatar";
-import type { Post } from "@/lib/posts";
+import { uploadErrorMessage, type Post } from "@/lib/posts";
 import LikeTotal from "@/components/LikeTotal";
 import StreakFlame from "@/components/StreakFlame";
 import PhotoCard from "@/components/PhotoCard";
@@ -31,12 +32,14 @@ export default function ProfilePage() {
   const { user, username, avatarPath, loading, setAvatarPath, adopt } = useAuth();
   const router = useRouter();
   const adminNotesUnread = useAdminChatUnread(user?.uid, user?.isAdmin === true);
-  const scrollRef = useRef<HTMLElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const libraryInputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [capturedFile, setCapturedFile] = useState<File | null>(null);
   const [showAvatarMenu, setShowAvatarMenu] = useState(false);
+  const avatarMenuRef = useRef<HTMLDivElement>(null);
+  useDialog(avatarMenuRef, () => setShowAvatarMenu(false), showAvatarMenu);
   const [cropBlob, setCropBlob] = useState<Blob | null>(null);
   const [myPosts, setMyPosts] = useState<Post[] | null>(null);
   const [visible, setVisible] = useState(PAGE);
@@ -44,7 +47,10 @@ export default function ProfilePage() {
   const [activeComments, setActiveComments] = useState<Post | null>(null);
   const [commentBumps, setCommentBumps] = useState<Record<string, number>>({});
   const avatarSrc = useAuthedImage(avatarPath);
-  const { hidden } = useBlockSets(user?.uid);
+  const { hidden, ready: blocksReady } = useBlockSets(user?.uid);
+  // Held back until the block lists land: likes and comment previews from a
+  // blocked member would otherwise flash on these cards first.
+  const shownPosts = blocksReady ? myPosts : null;
   const podium = usePodium(user?.uid);
   const streaks = useStreaks(user?.uid);
 
@@ -78,7 +84,7 @@ export default function ProfilePage() {
   // Reveal more of the already-fetched list as the sentinel nears the
   // viewport — every post is loaded up front (see the query above), so
   // "loading more" is just widening the slice, no extra fetch involved.
-  // Depends on myPosts: the sentinel only enters the DOM once the fetch
+  // Depends on shownPosts: the sentinel only enters the DOM once the fetch
   // above resolves, so the observer must (re)attach after that, not just
   // once at mount when the ref is still null.
   useEffect(() => {
@@ -92,7 +98,7 @@ export default function ProfilePage() {
     );
     observer.observe(el);
     return () => observer.disconnect();
-  }, [myPosts, visible]);
+  }, [shownPosts, visible]);
 
   // Picking a file opens the crop modal; the upload happens on crop confirm.
   function handleAvatarPick(e: React.ChangeEvent<HTMLInputElement>) {
@@ -111,12 +117,18 @@ export default function ProfilePage() {
     if (!user) return;
     setCropBlob(null);
     setBusy(true);
+    const path = `avatars/${user.uid}/${Date.now()}-avatar.jpg`;
+    let uploaded = false;
     try {
-      const path = `avatars/${user.uid}/${Date.now()}-avatar.jpg`;
       await uploadFile(path, blob);
+      uploaded = true;
       await updateDoc(doc(db, "users", user.uid), { avatarPath: path });
       setAvatarPath(path);
       invalidateAvatarMap();
+    } catch (e) {
+      // An upload that never became the avatar is taken back.
+      if (uploaded) void discardUpload(path).catch(() => {});
+      alert(`Couldn't update your photo. ${uploadErrorMessage(e)}`);
     } finally {
       setBusy(false);
     }
@@ -149,7 +161,9 @@ export default function ProfilePage() {
       <ViewportShell>
       <TopNav scrollRef={scrollRef} />
 
-      <main ref={scrollRef} className="mx-auto min-h-0 w-full max-w-lg flex-1 overflow-y-auto overscroll-contain pt-[calc(52px+env(safe-area-inset-top))]">
+      {/* Full-width scroller: in landscape the blank space beside the column scrolls too. */}
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      <main className="mx-auto w-full max-w-lg pt-[calc(52px+env(safe-area-inset-top))]">
         <div className="flex flex-col items-center border-b-[0.5px] border-field px-5 pb-5 pt-7">
           <div className="relative mb-3.5">
             <div className="flex h-[88px] w-[88px] items-center justify-center overflow-hidden rounded-full border-2 border-edge bg-field text-3xl font-extrabold text-dim">
@@ -204,13 +218,13 @@ export default function ProfilePage() {
               .toLocaleDateString(undefined, { month: "long", year: "numeric" })
               .toUpperCase()}
           </p>
-          {myPosts !== null && (
+          {shownPosts !== null && (
             <>
               <p className="mt-1 text-xs font-semibold tracking-[0.5px] text-mut">
-                {myPosts.length} POST{myPosts.length === 1 ? "" : "S"}
+                {shownPosts.length} POST{shownPosts.length === 1 ? "" : "S"}
               </p>
               <LikeTotal
-                likes={countLikes(myPosts, hidden)}
+                likes={countLikes(shownPosts, hidden)}
                 place={podium.get(user.uid) ?? null}
               />
               {/* Spelled out here rather than the bare number a name row
@@ -282,19 +296,19 @@ export default function ProfilePage() {
           </div>
         </div>
 
-        {myPosts === null && (
+        {shownPosts === null && (
           <p className="py-10 text-center text-[11px] font-semibold uppercase tracking-[2px] text-dim">
             Loading
           </p>
         )}
 
-        {myPosts !== null && myPosts.length === 0 && (
+        {shownPosts !== null && shownPosts.length === 0 && (
           <p className="py-10 text-center text-sm text-mut">
             No posts yet — hit the camera button to share your first photo.
           </p>
         )}
 
-        {myPosts?.slice(0, visible).map((post) => (
+        {shownPosts?.slice(0, visible).map((post) => (
           <PhotoCard
             key={post.id}
             post={post}
@@ -308,10 +322,11 @@ export default function ProfilePage() {
           />
         ))}
 
-        {myPosts !== null && visible < myPosts.length && (
+        {shownPosts !== null && visible < shownPosts.length && (
           <div ref={sentinelRef} className="h-10" />
         )}
       </main>
+      </div>
 
       <BottomNav onCapture={setCapturedFile} />
       </ViewportShell>
@@ -350,7 +365,12 @@ export default function ProfilePage() {
           onClick={() => setShowAvatarMenu(false)}
         >
           <div
-            className="animate-[sheet-up_0.25s_ease-out] rounded-t-[14px] bg-[#1c1c1e] pb-[calc(32px+env(safe-area-inset-bottom))] pt-2"
+            ref={avatarMenuRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Profile photo"
+            tabIndex={-1}
+            className="animate-[sheet-up_0.25s_ease-out] rounded-t-[14px] bg-[#1c1c1e] pb-[calc(32px+env(safe-area-inset-bottom))] pt-2 outline-none"
             onClick={(e) => e.stopPropagation()}
           >
             {["Take Photo", "Photo Library", "Edit Crop"].map((label) => (

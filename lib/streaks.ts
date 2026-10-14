@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import { useArchive } from "./feed-cache";
 import { badgeDate, type Post } from "./posts";
 import { wallClock } from "./site";
@@ -91,8 +91,7 @@ let memoPosts: Post[] | null = null;
 let memoToday = -1;
 let memoStreaks: Map<string, number> = EMPTY;
 
-function tally(posts: Post[]): Map<string, number> {
-  const today = siteToday();
+function tally(posts: Post[], today: number): Map<string, number> {
   if (posts !== memoPosts || today !== memoToday) {
     memoPosts = posts;
     memoToday = today;
@@ -101,7 +100,39 @@ function tally(posts: Post[]): Map<string, number> {
   return memoStreaks;
 }
 
+// The site's day, as something a view can subscribe to. Nothing else changes
+// at midnight — no post lands, nothing is invalidated — so a feed left open
+// in the foreground across midnight would keep counting against yesterday
+// and show flames that should have gone out. One shared minute tick for the
+// whole app notices the day turning and wakes every view holding a tally.
+const dayListeners = new Set<() => void>();
+let dayTimer: ReturnType<typeof setInterval> | null = null;
+let tickedDay = -1;
+
+function subscribeDay(onChange: () => void): () => void {
+  dayListeners.add(onChange);
+  if (tickedDay === -1) tickedDay = siteToday();
+  dayTimer ??= setInterval(() => {
+    const today = siteToday();
+    if (today === tickedDay) return;
+    tickedDay = today;
+    for (const wake of [...dayListeners]) wake();
+  }, 60_000);
+  return () => {
+    dayListeners.delete(onChange);
+    if (dayListeners.size === 0 && dayTimer) {
+      clearInterval(dayTimer);
+      dayTimer = null;
+    }
+  };
+}
+
+// Read live rather than from the tick, so the first render after a phone
+// wakes up already has the right day even before the tick catches up.
+const readDay = () => siteToday();
+
 export function useStreaks(uid: string | undefined): Map<string, number> {
   const posts = useArchive(Boolean(uid));
-  return useMemo(() => (posts ? tally(posts) : EMPTY), [posts]);
+  const today = useSyncExternalStore(subscribeDay, readDay, () => -1);
+  return useMemo(() => (posts ? tally(posts, today) : EMPTY), [posts, today]);
 }

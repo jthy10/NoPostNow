@@ -533,6 +533,57 @@ function BroadcastComposer({
   );
 }
 
+/* ------------------------------ deleted photos ------------------------------ */
+
+// What happens to the files behind a deleted post, a replaced avatar or a
+// closed account. Off (the default) erases them; on moves them to the data
+// folder's deleted/ directory, where only the host can get at them.
+function DeletedFilesSetting({ onChange }: { onChange: (keep: boolean) => void }) {
+  const [keep, setKeep] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    getDoc(doc(db, "config", "deletion"))
+      .then((snap) => setKeep(snap.exists() && snap.data().keepFiles === true))
+      .catch(() => setKeep(false));
+  }, []);
+
+  async function save(next: boolean) {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await setDoc(doc(db, "config", "deletion"), { keepFiles: next, updatedAt: serverTimestamp() });
+      setKeep(next);
+      onChange(next);
+      setMsg(next ? "Deleted photos now go to the deleted folder." : "Deleted photos are now erased.");
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Save failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Section
+      title="Deleted photos"
+      desc="When a post, profile photo or account is deleted, its photos are erased. Turn this on to move them to the deleted folder in the data folder instead. Members can't see or restore them; you can, on the host computer."
+      right={keep ? <Pill tone="warn">Kept</Pill> : keep === false ? <Pill>Erased</Pill> : null}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => save(!keep)}
+          disabled={busy || keep === null}
+          className={keep ? btn : btnPrimary}
+        >
+          {keep ? "Erase deleted photos" : "Keep deleted photos"}
+        </button>
+        {msg && <p className="text-[11.5px] text-mut">{msg}</p>}
+      </div>
+    </Section>
+  );
+}
+
 /* ---------------------------- announcement manager --------------------------- */
 
 function AnnouncementManager({
@@ -718,10 +769,14 @@ function MemberDetail({
                 ) : (
                   <div className="h-14 w-14 rounded-lg bg-field" />
                 )}
+                {/* A strip along the bottom, not a cover over the whole photo:
+                    on a touch screen there's no hover to reveal it first, so
+                    a full-size invisible button turned any tap on the photo
+                    into a delete. Always shown where there's no hover. */}
                 <button
                   onClick={() => onDeletePost(p)}
                   aria-label="Delete this post"
-                  className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/70 text-[9px] font-bold uppercase tracking-[1px] text-bad opacity-0 transition-opacity hover:opacity-100 focus-visible:opacity-100"
+                  className="absolute inset-x-0 bottom-0 rounded-b-lg bg-black/75 py-0.5 text-[8.5px] font-bold uppercase tracking-[1px] text-bad opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
                 >
                   Delete
                 </button>
@@ -767,6 +822,11 @@ export default function AdminPage() {
   const [needsCode, setNeedsCode] = useState(false);
   const [totpCode, setTotpCode] = useState("");
   const [data, setData] = useState<Data | null>(null);
+  // Bumped each time the panel (re)loads from the server. Editors seeded from
+  // `data` key off this rather than off the data itself, so they reset on a
+  // reload but not on their own save — which used to remount the announcement
+  // editor and throw away its "Live" confirmation the instant it appeared.
+  const [loadEpoch, setLoadEpoch] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   // posts manager state
@@ -865,6 +925,7 @@ export default function AdminPage() {
         ]);
         if (cancelled) return;
         const emailOf = new Map(accountList.accounts.map((a) => [a.uid, a.email]));
+        setLoadEpoch((n) => n + 1);
         setData({
           photos: photosSnap.docs.map((d) => {
             const x = d.data();
@@ -1280,6 +1341,42 @@ export default function AdminPage() {
     }
   }
 
+  // Runs a bulk action one item at a time and keeps going past a failure, so
+  // the panel can update for exactly the items that went through. Stopping
+  // at the first error (and updating nothing) left the screen showing items
+  // as still there that were already gone on the server, and vice versa.
+  // A lapsed admin session is the exception: every later write would fail
+  // the same way, so it stops there.
+  async function eachSettled<T>(items: T[], run: (item: T) => Promise<void>) {
+    const done: T[] = [];
+    let failed = 0;
+    let firstError: unknown = null;
+    for (const item of items) {
+      try {
+        await run(item);
+        done.push(item);
+      } catch (e) {
+        failed++;
+        firstError ??= e;
+        if (e instanceof Error && /permission/i.test(e.message)) {
+          failed = items.length - done.length;
+          break;
+        }
+      }
+    }
+    return { done, failed, firstError };
+  }
+
+  function reportBulk(what: string, failed: number, firstError: unknown) {
+    if (!failed) return;
+    if (firstError instanceof Error && /permission/i.test(firstError.message)) {
+      handleActionError(firstError);
+      return;
+    }
+    const reason = firstError instanceof Error ? ` (${firstError.message})` : "";
+    alert(`${failed} ${what} failed${reason}. The rest went through; the failed ones are left as they were.`);
+  }
+
   // Deletes the photo doc and its comment subcollection (otherwise the
   // comments linger as orphans that only show up in Data health).
   async function deletePostAndComments(p: P) {
@@ -1317,9 +1414,9 @@ export default function AdminPage() {
       !confirm("Really sure? This permanently deletes them and their comments.")
     )
       return;
-    try {
-      for (const p of targets) await deletePostAndComments(p);
-      const ids = new Set(targets.map((p) => p.id));
+    const { done, failed, firstError } = await eachSettled(targets, deletePostAndComments);
+    const ids = new Set(done.map((p) => p.id));
+    if (ids.size) {
       setData(
         (d) =>
           d && {
@@ -1328,11 +1425,11 @@ export default function AdminPage() {
             comments: d.comments.filter((c) => !ids.has(c.postId)),
           }
       );
-      setSelected(new Set());
-      log("bulk-delete-posts", `${targets.length} posts`);
-    } catch (e) {
-      handleActionError(e);
+      // Failed ones stay selected, ready for another go.
+      setSelected((sel) => new Set([...sel].filter((id) => !ids.has(id))));
+      log("bulk-delete-posts", `${ids.size} posts`);
     }
+    reportBulk("deletes", failed, firstError);
   }
 
   async function adminDeleteComment(c: C) {
@@ -1466,13 +1563,13 @@ export default function AdminPage() {
       !confirm("Really sure? This permanently deletes them.")
     )
       return;
-    try {
-      for (const p of m.dead) await deleteDoc(doc(db, "photos", p.id));
-      setData((d) => d && { ...d, photos: d.photos.filter((p) => p.timestamp && p.imagePath) });
-      log("sweep-dead-docs", `${m.dead.length} docs`);
-    } catch (e) {
-      handleActionError(e);
-    }
+    const { done, failed, firstError } = await eachSettled(m.dead, (p) =>
+      deleteDoc(doc(db, "photos", p.id))
+    );
+    const ids = new Set(done.map((p) => p.id));
+    setData((d) => d && { ...d, photos: d.photos.filter((p) => !ids.has(p.id)) });
+    if (ids.size) log("sweep-dead-docs", `${ids.size} docs`);
+    reportBulk("deletes", failed, firstError);
   }
 
   async function sweepOrphanComments() {
@@ -1483,15 +1580,13 @@ export default function AdminPage() {
       )
     )
       return;
-    try {
-      for (const c of m.orphanComments)
-        await deleteDoc(doc(db, "photos", c.postId, "comments", c.id));
-      const ids = new Set(m.orphanComments.map((c) => c.id));
-      setData((d) => d && { ...d, comments: d.comments.filter((c) => !ids.has(c.id)) });
-      log("sweep-orphan-comments", `${m.orphanComments.length} comments`);
-    } catch (e) {
-      handleActionError(e);
-    }
+    const { done, failed, firstError } = await eachSettled(m.orphanComments, (c) =>
+      deleteDoc(doc(db, "photos", c.postId, "comments", c.id))
+    );
+    const ids = new Set(done.map((c) => c.id));
+    setData((d) => d && { ...d, comments: d.comments.filter((c) => !ids.has(c.id)) });
+    if (ids.size) log("sweep-orphan-comments", `${ids.size} comments`);
+    reportBulk("deletes", failed, firstError);
   }
 
   async function saveAnnouncement(text: string, link: string, active: boolean) {
@@ -1645,6 +1740,23 @@ export default function AdminPage() {
           >
             {onTotp ? "Verify" : "Unlock"}
           </button>
+          {onTotp && (
+            // A phone without the authenticator to hand, or the wrong account's
+            // password, still lands here — and the only exit used to be
+            // reloading the page.
+            <button
+              type="button"
+              onClick={() => {
+                setNeedsCode(false);
+                setTotpCode("");
+                setPassword("");
+                setGateError(null);
+              }}
+              className="mt-4 w-full text-center text-xs text-dim transition-colors hover:text-white"
+            >
+              Back to password
+            </button>
+          )}
           <p className="mt-4 truncate text-center text-[10px] text-dim">{user.email}</p>
         </form>
       </main>
@@ -1684,7 +1796,12 @@ export default function AdminPage() {
         ? (m.commentsByPost.get(b.id) ?? 0) - (m.commentsByPost.get(a.id) ?? 0)
         : 0
   );
-  const pagePosts = sortedPosts.slice(page * PER_PAGE, (page + 1) * PER_PAGE);
+  // Deleting the last rows of the last page shrinks the list out from under
+  // the page number — clamp so the panel steps back a page instead of
+  // sitting on an empty one with the pager still pointing past the end.
+  const lastPage = (total: number, per: number) => Math.max(0, Math.ceil(total / per) - 1);
+  const postPage = Math.min(page, lastPage(sortedPosts.length, PER_PAGE));
+  const pagePosts = sortedPosts.slice(postPage * PER_PAGE, (postPage + 1) * PER_PAGE);
 
   const filteredComments = [...data.comments]
     .sort((a, b) => (b.timestamp?.getTime() ?? 0) - (a.timestamp?.getTime() ?? 0))
@@ -1693,7 +1810,11 @@ export default function AdminPage() {
       if (!q) return true;
       return (c.username || "").toLowerCase().includes(q) || c.text.toLowerCase().includes(q);
     });
-  const pageComments = filteredComments.slice(cPage * C_PER_PAGE, (cPage + 1) * C_PER_PAGE);
+  const commentPage = Math.min(cPage, lastPage(filteredComments.length, C_PER_PAGE));
+  const pageComments = filteredComments.slice(
+    commentPage * C_PER_PAGE,
+    (commentPage + 1) * C_PER_PAGE
+  );
 
   // One pass per member, then filter + sort — the table header drives both.
   const memberRows = data.users
@@ -2622,7 +2743,7 @@ export default function AdminPage() {
                       ))
                     )}
                     <Pagination
-                      page={page}
+                      page={postPage}
                       perPage={PER_PAGE}
                       total={sortedPosts.length}
                       onPage={setPage}
@@ -2723,7 +2844,7 @@ export default function AdminPage() {
                       ))
                     )}
                     <Pagination
-                      page={cPage}
+                      page={commentPage}
                       perPage={C_PER_PAGE}
                       total={filteredComments.length}
                       onPage={setCPage}
@@ -2743,7 +2864,7 @@ export default function AdminPage() {
                   }}
                 />
                 <AnnouncementManager
-                  key={data.announcement?.updatedAt?.getTime() ?? "none"}
+                  key={loadEpoch}
                   initial={data.announcement}
                   onSave={saveAnnouncement}
                 />
@@ -2754,6 +2875,10 @@ export default function AdminPage() {
             {tab === "system" && (
               <>
                 <SecurityPanel user={user} unlockedAt={unlockedAt} onLock={lock} />
+
+                <DeletedFilesSetting
+                  onChange={(keep) => log(keep ? "keep-deleted-photos" : "erase-deleted-photos", "")}
+                />
 
                 <Section
                   title="Data health"

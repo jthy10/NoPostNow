@@ -15,7 +15,7 @@ import {
   useKeyboardInset,
   useBodyScrollLock,
   useSwipeDismiss,
-  useEscapeToClose,
+  useDialog,
 } from "@/lib/sheet";
 import { notifyComment, notifyMention, notifyCommentLike } from "@/lib/push";
 import { useBlockSets } from "@/lib/blocks";
@@ -27,6 +27,7 @@ import {
   extractMentionUids,
   splitMentions,
 } from "@/lib/mentions";
+import { afterSend, isSendEnter } from "@/lib/keys";
 import Avatar from "./Avatar";
 import StreakFlame from "./StreakFlame";
 
@@ -80,7 +81,7 @@ export default function CommentSheet({
   const { sheetRef, dragY, dragging } = useSwipeDismiss(requestClose, {
     scrollRef: listRef,
   });
-  useEscapeToClose(requestClose);
+  useDialog(sheetRef, requestClose);
 
   // Everyone selectable with @, most recently active first. Includes the
   // signed-in user (so their own name still highlights when mentioned); the
@@ -194,6 +195,7 @@ export default function CommentSheet({
   async function handleSend() {
     const trimmed = text.trim();
     if (!trimmed || busy) return;
+    const sent = text;
     setBusy(true);
     setSendError(null);
     try {
@@ -223,8 +225,13 @@ export default function CommentSheet({
     const ownerForComment = mentionSet.has(post.userUUID) ? "" : post.userUUID;
     if (mentionTargets.length) void notifyMention(username, trimmed, mentionTargets, post.id);
     void notifyComment(username, trimmed, ownerForComment, post.id, participantUids);
-    setText("");
-    setCaret(0);
+    // `text` here is still the value from when Send was tapped; whatever was
+    // typed since lives only in the updater's `current`.
+    setText((current) => {
+      const rest = afterSend(current, sent);
+      setCaret(rest.length);
+      return rest;
+    });
     await load().catch(() => {});
     scrollToLatest(true);
     onChanged?.();
@@ -303,7 +310,11 @@ export default function CommentSheet({
     >
       <div
         ref={sheetRef}
-        className={`flex max-h-[75vh] w-full flex-col rounded-t-2xl border-t-[0.5px] border-[#222] bg-card transition-transform duration-250 ${
+        role="dialog"
+        aria-modal="true"
+        aria-label="Comments"
+        tabIndex={-1}
+        className={`outline-none flex max-h-[75vh] w-full flex-col rounded-t-2xl border-t-[0.5px] border-[#222] bg-card transition-transform duration-250 ${
           closing ? "translate-y-full" : "animate-[sheet-up_0.3s_ease-out]"
         }`}
         style={{
@@ -483,7 +494,7 @@ export default function CommentSheet({
                 onKeyUp={() => setCaret(inputRef.current?.selectionStart ?? 0)}
                 onClick={() => setCaret(inputRef.current?.selectionStart ?? 0)}
                 onKeyDown={(e) => {
-                  if (e.key !== "Enter") return;
+                  if (!isSendEnter(e)) return;
                   // While the picker is up, Enter takes the top match instead of
                   // sending — so you can @someone without the comment firing early.
                   if (mentionOpen) {

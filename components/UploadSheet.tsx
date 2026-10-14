@@ -1,13 +1,13 @@
 "use client";
 
-import { useState } from "react";
-import { createPost } from "@/lib/posts";
+import { useEffect, useState } from "react";
+import { createPost, photoProblem } from "@/lib/posts";
 import { notifyNewPost } from "@/lib/push";
 import {
   useKeyboardInset,
   useBodyScrollLock,
   useSwipeDismiss,
-  useEscapeToClose,
+  useDialog,
 } from "@/lib/sheet";
 
 export default function UploadSheet({
@@ -23,10 +23,22 @@ export default function UploadSheet({
   onClose: () => void;
   onPosted: () => void;
 }) {
-  const [preview] = useState(() => URL.createObjectURL(file));
+  // Made in an effect rather than a state initializer so it can be released:
+  // each object URL pins the whole photo in memory until it's revoked, and
+  // nothing else would ever let go of it.
+  const [preview, setPreview] = useState<string | null>(null);
+  useEffect(() => {
+    const url = URL.createObjectURL(file);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- paired with the revoke below
+    setPreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
   const [caption, setCaption] = useState("");
   const [progress, setProgress] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // A file the server would refuse (too big, not a photo) says so up front
+  // rather than after a long upload.
+  const [problem] = useState(() => photoProblem(file));
+  const [error, setError] = useState<string | null>(problem);
   const [closing, setClosing] = useState(false);
   const { inset, visibleHeight } = useKeyboardInset();
   useBodyScrollLock();
@@ -36,7 +48,7 @@ export default function UploadSheet({
   const { sheetRef, dragY, dragging } = useSwipeDismiss(requestClose, {
     enabled: !busy,
   });
-  useEscapeToClose(requestClose);
+  useDialog(sheetRef, requestClose);
 
   function requestClose() {
     if (busy) return;
@@ -45,7 +57,7 @@ export default function UploadSheet({
   }
 
   async function handleSend() {
-    if (busy) return;
+    if (busy || problem) return;
     setProgress(0);
     setError(null);
     try {
@@ -76,7 +88,11 @@ export default function UploadSheet({
     >
       <div
         ref={sheetRef}
-        className={`w-full overflow-y-auto overscroll-contain rounded-t-2xl border-t-[0.5px] border-[#222] bg-card px-4 pb-[calc(20px+env(safe-area-inset-bottom))] transition-transform duration-250 ${
+        role="dialog"
+        aria-modal="true"
+        aria-label="New post"
+        tabIndex={-1}
+        className={`outline-none w-full overflow-y-auto overscroll-contain rounded-t-2xl border-t-[0.5px] border-[#222] bg-card px-4 pb-[calc(20px+env(safe-area-inset-bottom))] transition-transform duration-250 ${
           closing ? "translate-y-full" : "animate-[sheet-up_0.3s_ease-out]"
         }`}
         style={{
@@ -102,7 +118,7 @@ export default function UploadSheet({
 
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src={preview}
+          src={preview ?? undefined}
           alt="preview"
           className="max-h-[50vh] w-full rounded-lg object-contain"
         />
@@ -134,7 +150,7 @@ export default function UploadSheet({
         )}
         <button
           onClick={handleSend}
-          disabled={busy}
+          disabled={busy || Boolean(problem)}
           className="mt-3 w-full rounded-lg bg-white p-3.5 text-sm font-extrabold tracking-[0.3px] text-black transition-opacity active:opacity-75 disabled:opacity-30"
         >
           {busy ? `Posting… ${Math.round(progress * 100)}%` : "Send Photo"}

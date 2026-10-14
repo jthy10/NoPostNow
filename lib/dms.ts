@@ -20,7 +20,7 @@ import { fetchAllUsers } from "./users";
 import { isStandalone } from "./push";
 import { useBlockSets } from "./blocks";
 import { useAdminChatUnread } from "./admin-chat";
-import { apiGet } from "./api";
+import { ApiError, apiGet } from "./api";
 
 // Direct messages. One doc per pair of people:
 //
@@ -123,12 +123,15 @@ export function useThread(threadId: string | undefined) {
 // or before `since` was cleared by this user and never renders for them. The
 // query still asks for the newest `max`, so clearing a long history cannot
 // push live messages out of the window — the cut happens after the fetch.
+// The newest `max` messages, oldest first, plus whether the query was full —
+// i.e. whether there may be older ones the thread can offer to load.
 export function useMessages(
   threadId: string | undefined,
   since?: Timestamp | null,
   max = 200
 ) {
   const [messages, setMessages] = useState<Message[] | null>(null);
+  const [full, setFull] = useState(false);
   // Depend on the millis, not the Timestamp: the store hands back a fresh
   // object every snapshot, which would tear down and rebuild the listener
   // on each one.
@@ -151,12 +154,17 @@ export function useMessages(
           (a, b) => (a.at?.toMillis() ?? Infinity) - (b.at?.toMillis() ?? Infinity)
         );
         setMessages(list);
+        // Full only counts if the oldest message fetched is still on this
+        // side of a clear — otherwise everything older is deleted for you
+        // anyway and there's nothing earlier to offer.
+        const oldest = snap.docs[snap.docs.length - 1]?.data().at as Timestamp | null | undefined;
+        setFull(snap.docs.length >= max && (cut === null || !oldest || oldest.toMillis() > cut));
       },
       () => setMessages([])
     );
   }, [threadId, cut, max]);
 
-  return messages;
+  return { messages, full };
 }
 
 // Send a message: upsert the thread doc (create carries the exact shape the
@@ -174,21 +182,30 @@ export async function sendMessage(opts: {
   const id = threadIdFor(opts.myUid, opts.peerUid);
   const uids = [opts.myUid, opts.peerUid].sort();
 
-  await setDoc(
-    doc(db, "dms", id),
-    {
-      uids,
-      names: { [opts.myUid]: opts.myName, [opts.peerUid]: opts.peerName },
-      lastText: text.slice(0, 120),
-      lastFrom: opts.myUid,
-      lastAt: serverTimestamp(),
-      // Sending is reading: your own seen pointer rides along. Nested map
-      // (not a dotted path — setDoc doesn't parse those) deep-merges, so the
-      // peer's pointer survives.
-      seenAt: { [opts.myUid]: serverTimestamp() },
-    },
-    { merge: true }
-  );
+  const upsert = (names: Record<string, string>) =>
+    setDoc(
+      doc(db, "dms", id),
+      {
+        uids,
+        names,
+        lastText: text.slice(0, 120),
+        lastFrom: opts.myUid,
+        lastAt: serverTimestamp(),
+        // Sending is reading: your own seen pointer rides along. Nested map
+        // (not a dotted path — setDoc doesn't parse those) deep-merges, so the
+        // peer's pointer survives.
+        seenAt: { [opts.myUid]: serverTimestamp() },
+      },
+      { merge: true }
+    );
+  try {
+    await upsert({ [opts.myUid]: opts.myName, [opts.peerUid]: opts.peerName });
+  } catch (err) {
+    // The server only takes a name that matches the member's profile. If
+    // the peer renamed since this page loaded, send without touching theirs.
+    if (!(err instanceof ApiError) || err.status !== 403) throw err;
+    await upsert({ [opts.myUid]: opts.myName });
+  }
   await addDoc(collection(db, "dms", id, "messages"), {
     from: opts.myUid,
     text,

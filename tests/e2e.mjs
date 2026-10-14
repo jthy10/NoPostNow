@@ -4,6 +4,7 @@
 //
 //   npm run build && npm run test:e2e
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -131,6 +132,7 @@ ok("feed", r.json.docs.length === 1 && typeof r.json.docs[0].data.timestamp.__ts
 
 // --- likes
 ok("like", (await b.store({ op: "update", path: postPath, data: { likedBy: { __op: "arrayUnion", values: [bUid] } } })).status === 200);
+ok("like can't stack", (await b.store({ op: "update", path: postPath, data: { likedBy: [bUid, bUid] } })).status === 403);
 ok("like as other", (await b.store({ op: "update", path: postPath, data: { likedBy: { __op: "arrayUnion", values: [adminUid] } } })).status === 403);
 ok("non-owner caption edit", (await b.store({ op: "update", path: postPath, data: { caption: "hax" } })).status === 403);
 ok("owner caption edit", (await a.store({ op: "update", path: postPath, data: { caption: "edited" } })).status === 200);
@@ -147,6 +149,14 @@ ok("comment count", (await a.store({ op: "count", spec: { parent: cPar } })).jso
 ok("group query", (await a.store({ op: "query", spec: { group: "comments", where: [["userUUID", "==", bUid]] } })).json.docs.length === 1);
 ok("other can't delete comment", (await a.store({ op: "delete", path: cPath })).status === 403);
 
+// --- uploads that never became anything can be taken back, and only those
+const spare = `photos/${aUid}/1700000000001-spare.jpg`;
+ok("spare upload", (await a.call(`/api/files/${spare}`, { method: "PUT", raw: jpeg, headers: { "content-type": "image/jpeg" } })).status === 200);
+ok("take back other's upload", (await b.call(`/api/files/${spare}`, { method: "DELETE" })).status === 403);
+ok("take back posted photo", (await a.call(`/api/files/${img}`, { method: "DELETE" })).status === 409);
+ok("take back own spare", (await a.call(`/api/files/${spare}`, { method: "DELETE" })).status === 200);
+ok("spare gone", (await a.call(`/api/files/${spare}`, { method: "GET" })).status === 404);
+
 // --- DMs
 const tid = [aUid, bUid].sort().join("_");
 const uids = [aUid, bUid].sort();
@@ -157,6 +167,11 @@ ok("dm seen dotted", (await b.store({ op: "update", path: `dms/${tid}`, data: { 
 r = await b.store({ op: "get", path: `dms/${tid}` });
 ok("dm merge kept both seen", r.json.doc && r.json.doc.data.seenAt[aUid] && r.json.doc.data.seenAt[bUid]);
 ok("dm clear other's copy", (await b.store({ op: "update", path: `dms/${tid}`, data: { [`clearedAt.${aUid}`]: ST } })).status === 403);
+ok("dm mark other's seen", (await b.store({ op: "update", path: `dms/${tid}`, data: { [`seenAt.${aUid}`]: ST } })).status === 403);
+ok("dm preview in other's name", (await b.store({ op: "merge", path: `dms/${tid}`, data: { lastText: "I owe Bob $50", lastFrom: aUid, lastAt: ST } })).status === 403);
+ok("dm preview with old time", (await b.store({ op: "merge", path: `dms/${tid}`, data: { lastText: "hey", lastFrom: bUid, lastAt: { __ts: 1 } } })).status === 403);
+ok("dm forged name", (await b.store({ op: "merge", path: `dms/${tid}`, data: { names: { [aUid]: "Mallory" } } })).status === 403);
+ok("dm own preview", (await b.store({ op: "merge", path: `dms/${tid}`, data: { names: { [aUid]: "Alice", [bUid]: "Bob" }, lastText: "hey", lastFrom: bUid, lastAt: ST } })).status === 200);
 ok("outsider can't read thread", (await admin.store({ op: "get", path: `dms/${tid}` })).status === 403);
 ok("outsider can't read messages", (await admin.store({ op: "query", spec: { parent: `dms/${tid}/messages` } })).json.docs.length === 0);
 ok("outsider thread list empty", (await admin.store({ op: "query", spec: { parent: "dms", where: [["uids", "array-contains", aUid]] } })).json.docs.length === 0);
@@ -164,6 +179,10 @@ ok("outsider group query empty", (await admin.store({ op: "query", spec: { group
 
 // --- notifications, blocks, prefs
 ok("bell item", (await b.store({ op: "add", parent: `notifications/${aUid}/items`, data: { type: "like", actorUid: bUid, actorName: "Bob", postId, at: ST } })).status === 200);
+ok("bell like that never happened", (await admin.store({ op: "add", parent: `notifications/${aUid}/items`, data: { type: "like", actorUid: adminUid, actorName: "HostAdmin", postId, at: ST } })).status === 403);
+ok("bell about no post", (await b.store({ op: "add", parent: `notifications/${aUid}/items`, data: { type: "comment", actorUid: bUid, actorName: "Bob", postId: "nope", text: "x", at: ST } })).status === 403);
+ok("bell with a path for an id", (await b.store({ op: "add", parent: `notifications/${aUid}/items`, data: { type: "comment", actorUid: bUid, actorName: "Bob", postId: `${postId}/comments/x`, text: "x", at: ST } })).status === 403);
+ok("bell 'post' for someone else's post", (await b.store({ op: "add", parent: `notifications/${aUid}/items`, data: { type: "post", actorUid: bUid, actorName: "Bob", postId, at: ST } })).status === 403);
 ok("bell forged actor", (await b.store({ op: "add", parent: `notifications/${aUid}/items`, data: { type: "like", actorUid: adminUid, actorName: "HostAdmin", postId, at: ST } })).status === 403);
 ok("bell not readable by others", (await admin.store({ op: "query", spec: { parent: `notifications/${aUid}/items` } })).json.docs.length === 0);
 ok("bell readable by owner", (await a.store({ op: "query", spec: { parent: `notifications/${aUid}/items`, orderBy: [["at", "desc"]], limit: 10 } })).json.docs.length === 1);
@@ -184,18 +203,24 @@ ok("malformed query", (await a.store({ op: "query", spec: { parent: "photos", wh
 ok("padded username", (await a.store({ op: "update", path: `users/${aUid}`, data: { username: "Alice   " } })).status === 403);
 
 // --- a shared device moves to whoever signs in on it, and only it can do so
-const device = { endpoint: "https://push.example.com/send/abc", p256dh: "key-1", auth: "secret-1" };
-ok("register device", (await a.store({ op: "set", path: "pushSubscriptions/dev1", data: { uid: aUid, ...device, updatedAt: ST } })).status === 200);
-ok("device can't be taken with other keys", (await b.store({ op: "set", path: "pushSubscriptions/dev1", data: { uid: bUid, ...device, auth: "guess", updatedAt: ST } })).status === 403);
-ok("same device changes hands", (await b.store({ op: "set", path: "pushSubscriptions/dev1", data: { uid: bUid, ...device, updatedAt: ST } })).status === 200);
-ok("previous member lost the device", (await a.store({ op: "delete", path: "pushSubscriptions/dev1" })).status === 403);
-ok("owner removes device", (await b.store({ op: "delete", path: "pushSubscriptions/dev1" })).status === 200);
+const device = { endpoint: "https://fcm.googleapis.com/fcm/send/abc", p256dh: "key-1", auth: "secret-1" };
+const devPath = `pushSubscriptions/${crypto.createHash("sha256").update(device.endpoint).digest("hex")}`;
+const lan = { ...device, endpoint: "https://192.168.1.10/push" };
+ok("device on the home network refused", (await a.store({ op: "set", path: `pushSubscriptions/${crypto.createHash("sha256").update(lan.endpoint).digest("hex")}`, data: { uid: aUid, ...lan, updatedAt: ST } })).status === 403);
+ok("device under another id refused", (await a.store({ op: "set", path: "pushSubscriptions/dev1", data: { uid: aUid, ...device, updatedAt: ST } })).status === 403);
+ok("register device", (await a.store({ op: "set", path: devPath, data: { uid: aUid, ...device, updatedAt: ST } })).status === 200);
+ok("device can't be taken with other keys", (await b.store({ op: "set", path: devPath, data: { uid: bUid, ...device, auth: "guess", updatedAt: ST } })).status === 403);
+ok("same device changes hands", (await b.store({ op: "set", path: devPath, data: { uid: bUid, ...device, updatedAt: ST } })).status === 200);
+ok("previous member lost the device", (await a.store({ op: "delete", path: devPath })).status === 403);
+ok("owner removes device", (await b.store({ op: "delete", path: devPath })).status === 200);
 ok("prefs", (await a.store({ op: "set", path: `notifPrefs/${aUid}`, data: { uid: aUid, posts: true, comments: true, likes: false, dms: true, daily: true, quietStart: null, quietEnd: null, tz: "America/Chicago", updatedAt: ST } })).status === 200);
 ok("prefs private", (await b.store({ op: "get", path: `notifPrefs/${aUid}` })).status === 403);
 
 // --- profile edits
 ok("rename", (await a.store({ op: "update", path: `users/${aUid}`, data: { username: "Alicia" } })).status === 200);
 ok("rename to taken", (await a.store({ op: "update", path: `users/${aUid}`, data: { username: "bob" } })).status === 403);
+ok("activity stamp from the client", (await a.store({ op: "update", path: `users/${aUid}`, data: { lastPostAt: { __ts: 1 } } })).status === 403);
+ok("activity stamp from the server", (await a.store({ op: "update", path: `users/${aUid}`, data: { lastPostAt: ST } })).status === 200);
 ok("self unmute/mute denied", (await a.store({ op: "update", path: `users/${aUid}`, data: { muted: false } })).status === 403);
 ok("edit other's profile", (await a.store({ op: "update", path: `users/${bUid}`, data: { username: "Hacked" } })).status === 403);
 ok("restamp post name", (await a.store({ op: "update", path: postPath, data: { username: "Alicia" } })).status === 200);
@@ -231,7 +256,11 @@ ok("email taken", (await a.call("/api/auth/email", { body: { password: "password
 
 // --- deletion cascades
 ok("delete post by other", (await b.store({ op: "delete", path: postPath })).status === 403);
+ok("member can't keep deleted photos", (await a.store({ op: "set", path: "config/deletion", data: { keepFiles: true } })).status === 403);
+ok("admin keeps deleted photos", (await admin.store({ op: "set", path: "config/deletion", data: { keepFiles: true, updatedAt: ST } })).status === 200);
 ok("delete account", (await a.call("/api/auth/delete-account", { body: { password: "password-aaa" } })).status === 200);
+ok("photo moved to the deleted folder", fs.existsSync(path.join(dataDir, "deleted", ...img.split("/"))));
+ok("note beside it", JSON.parse(fs.readFileSync(path.join(dataDir, "deleted", ...img.split("/")) + ".json", "utf8")).uid === aUid);
 ok("post gone", (await b.store({ op: "get", path: postPath })).json.doc === null);
 ok("comments gone", (await b.store({ op: "query", spec: { group: "comments" } })).json.docs.length === 0);
 ok("file gone", (await b.call(`/api/files/${img}`, { method: "GET" })).status === 404);

@@ -2,7 +2,8 @@ import { listAccounts } from "@/server/core/accounts";
 import { blockedPairUids, pushConfigured, sendPush, type PushKind } from "@/server/push";
 import { config, db } from "@/server/runtime";
 import { getSession, isAdmin, isSameOrigin } from "@/server/session";
-import { getDoc } from "@/server/store";
+import { ANNOUNCE_WINDOW_MS } from "@/server/rules";
+import { getDoc, millis } from "@/server/store";
 
 export const dynamic = "force-dynamic";
 
@@ -79,10 +80,19 @@ export async function POST(request: Request) {
   const threadId = idOk(body.threadId);
 
   // A "new post" ping reaches everyone, so it must be about a post the
-  // sender really made.
+  // sender really made, still fresh and still up, and it rings only once.
   const post = postId ? getDoc(`photos/${postId}`)?.data : undefined;
-  if (type === "post" && post?.userUUID !== actorUid) {
-    return Response.json({ error: "not your post" }, { status: 403 });
+  if (type === "post") {
+    const posted = millis(post?.timestamp);
+    if (
+      !post ||
+      post.userUUID !== actorUid ||
+      post.deleted === true ||
+      posted === null ||
+      Date.now() - posted > ANNOUNCE_WINDOW_MS
+    ) {
+      return Response.json({ error: "not your post" }, { status: 403 });
+    }
   }
   // A DM ping must name a thread the sender is in, and only its members.
   if (type === "dm") {
@@ -97,6 +107,16 @@ export async function POST(request: Request) {
     return Response.json({ sent: 0, stale: 0, skipped: "muted" });
   }
   if (rateLimited(actorUid)) return Response.json({ error: "slow down" }, { status: 429 });
+  // Claimed last, after every refusal, so a rejected attempt doesn't use up
+  // the post's one announcement.
+  if (type === "post") {
+    const claimed = db()
+      .prepare("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING")
+      .run(`announced:${postId}`, String(Date.now()));
+    if (claimed.changes === 0) {
+      return Response.json({ error: "already announced" }, { status: 409 });
+    }
+  }
 
   const { siteName } = config();
   const username =

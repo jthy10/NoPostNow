@@ -9,7 +9,7 @@ import {
   useKeyboardInset,
   useBodyScrollLock,
   useSwipeDismiss,
-  useEscapeToClose,
+  useDialog,
 } from "@/lib/sheet";
 import Avatar from "./Avatar";
 
@@ -37,7 +37,7 @@ export default function UserSearchSheet({
   const { sheetRef, dragY, dragging } = useSwipeDismiss(requestClose, {
     scrollRef: listRef,
   });
-  useEscapeToClose(requestClose);
+  useDialog(sheetRef, requestClose);
 
   useEffect(() => {
     let cancelled = false;
@@ -92,7 +92,11 @@ export default function UserSearchSheet({
     >
       <div
         ref={sheetRef}
-        className={`flex max-h-[75vh] min-h-[45vh] w-full flex-col rounded-t-2xl border-t-[0.5px] border-[#222] bg-card transition-transform duration-250 ${
+        role="dialog"
+        aria-modal="true"
+        aria-label="New message"
+        tabIndex={-1}
+        className={`outline-none flex max-h-[75vh] min-h-[45vh] w-full flex-col rounded-t-2xl border-t-[0.5px] border-[#222] bg-card transition-transform duration-250 ${
           closing ? "translate-y-full" : "animate-[sheet-up_0.3s_ease-out]"
         }`}
         style={{

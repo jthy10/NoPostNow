@@ -2,6 +2,7 @@
 
 import PageHeader from "./PageHeader";
 import InstallBanner from "./InstallBanner";
+import ViewportShell from "./ViewportShell";
 import { site } from "@/lib/site";
 
 // DMs are app-only. Anyone who lands on /dm from a browser tab gets the
@@ -9,8 +10,11 @@ import { site } from "@/lib/site";
 // renders the platform-specific install steps on phones (null on desktop).
 export default function DmInstallPitch() {
   return (
-    <>
+    <ViewportShell>
       <PageHeader backHref="/notifications" title="Messages" />
+      {/* Its own full-width scroller, like every other page — in landscape
+          the pitch is taller than the screen. */}
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
       <main className="mx-auto w-full max-w-lg pb-[90px] pt-[calc(52px+env(safe-area-inset-top))]">
         <div className="flex flex-col items-center gap-3 px-8 pb-4 pt-14 text-center">
           <svg
@@ -35,6 +39,7 @@ export default function DmInstallPitch() {
           On your phone, open this site in your browser and add it to your Home Screen.
         </p>
       </main>
-    </>
+      </div>
+    </ViewportShell>
   );
 }

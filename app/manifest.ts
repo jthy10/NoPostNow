@@ -11,9 +11,9 @@ export default function manifest(): MetadataRoute.Manifest {
     description: tagline,
     start_url: "/",
     display: "standalone",
-    // Locks Android PWAs to portrait. iOS ignores this — OrientationLock
-    // covers it with a rotate-back overlay instead.
-    orientation: "portrait",
+    // Either way up — locking to portrait shuts out anyone whose phone is
+    // mounted sideways (WCAG 1.3.4).
+    orientation: "any",
     background_color: "#0a0a0a",
     theme_color: "#0a0a0a",
     icons: [

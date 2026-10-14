@@ -63,7 +63,8 @@ export async function renameUser(opts: { uid: string; newName: string }) {
 
 // DM thread docs cache each participant's display name (names.{uid}) so the
 // inbox renders without N user lookups. Restamp mine on every thread I'm in;
-// rules allow participants to update anything except the membership list.
+// the server takes a name only when it matches that member's profile, which
+// is why the users doc changes first.
 async function propagateDmNames(uid: string, newName: string) {
   const snap = await getDocs(
     query(collection(db, "dms"), where("uids", "array-contains", uid))

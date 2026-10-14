@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
@@ -143,15 +143,25 @@ function ToggleRow({
   disabled?: boolean;
   onChange: (next: boolean) => void;
 }) {
+  // The switch is named by its row's label (and described by the subtitle),
+  // so a screen reader says "New posts, switch, on" — not six identical
+  // "switch, on"s.
+  const id = useId();
   return (
     <div className={`flex items-center gap-3 px-4 py-3.5 ${rowDivide}`}>
       <div className="min-w-0 flex-1">
-        <p className="text-[14px] font-bold">{label}</p>
-        {sub && <p className="mt-0.5 text-[12px] leading-snug text-mut">{sub}</p>}
+        <p id={`${id}-label`} className="text-[14px] font-bold">{label}</p>
+        {sub && (
+          <p id={`${id}-sub`} className="mt-0.5 text-[12px] leading-snug text-mut">
+            {sub}
+          </p>
+        )}
       </div>
       <button
         role="switch"
         aria-checked={on}
+        aria-labelledby={`${id}-label`}
+        aria-describedby={sub ? `${id}-sub` : undefined}
         disabled={disabled}
         onClick={() => onChange(!on)}
         className={`relative h-[28px] w-[48px] shrink-0 rounded-full transition-colors duration-200 disabled:opacity-40 ${
@@ -483,7 +493,9 @@ export default function SettingsPage() {
     <ViewportShell>
       <PageHeader backHref="/profile" title="Settings" />
 
-      <main className="mx-auto min-h-0 w-full max-w-lg flex-1 overflow-y-auto overscroll-contain pb-12 pt-[calc(52px+env(safe-area-inset-top))]">
+      {/* Full-width scroller: in landscape the blank space beside the column scrolls too. */}
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      <main className="mx-auto w-full max-w-lg pb-12 pt-[calc(52px+env(safe-area-inset-top))]">
         <Group title="Account">
           <Row
             label="Username"
@@ -915,6 +927,7 @@ export default function SettingsPage() {
           {site.siteName} — one feed, no algorithm.
         </p>
       </main>
+      </div>
     </ViewportShell>
   );
 }
