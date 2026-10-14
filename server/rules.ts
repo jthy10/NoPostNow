@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { usernameTaken, validateUsername } from "./core/accounts.ts";
 import { db } from "./runtime.ts";
 import { isAdmin, isFreshAdmin, type Session } from "./session.ts";
@@ -44,16 +45,35 @@ function notMuted(ctx: Ctx): boolean {
   return ownProfile(ctx)?.muted !== true;
 }
 
-// A like toggle may add or remove the caller's own uid and nothing else.
+// A like toggle may add or remove the caller's own uid and nothing else. The
+// list grows or shrinks by exactly one and never holds the same uid twice, so
+// likes can't be stacked.
 function ownLikeToggle(before: Data, after: Data, ctx: Ctx): boolean {
   if (!touchesOnly(before, after, ["likedBy"]) || !Array.isArray(after.likedBy)) return false;
   const was = Array.isArray(before.likedBy) ? before.likedBy : [];
   const now = after.likedBy;
-  if (now.some((v) => typeof v !== "string")) return false;
+  if (now.some((v) => typeof v !== "string") || new Set(now).size !== now.length) return false;
   const added = now.filter((v) => !was.includes(v));
   const removed = was.filter((v) => !now.includes(v));
-  return [...added, ...removed].every((v) => v === ctx.uid);
+  return (
+    Math.abs(now.length - was.length) === 1 &&
+    added.length + removed.length === 1 &&
+    [...added, ...removed].every((v) => v === ctx.uid)
+  );
 }
+
+// What a bell item or a post id may look like: one plain document id.
+const DOC_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/;
+
+// A live post, not one its author or the admin has taken down.
+function livePost(postId: unknown): Data | null {
+  if (typeof postId !== "string" || !DOC_ID.test(postId)) return null;
+  const post = getDoc(`photos/${postId}`)?.data;
+  return post && post.deleted !== true ? post : null;
+}
+
+// How long after posting its author may still announce it to everyone.
+export const ANNOUNCE_WINDOW_MS = 10 * 60_000;
 
 function inThread(threadId: string, uid: string): boolean {
   return threadId.split("_").includes(uid);
@@ -68,6 +88,44 @@ function blockedBetween(a: string, b: string): boolean {
   };
   return lists(a, b) || lists(b, a);
 }
+
+// Per-person maps on a DM thread: a write may change only the caller's own
+// entry, and only to the current server time.
+function ownStampOnly(before: Data | null, after: Data, key: string, ctx: Ctx): boolean {
+  const was = (before?.[key] ?? {}) as Data;
+  const is = (after[key] ?? {}) as Data;
+  if (typeof is !== "object" || Array.isArray(is)) return false;
+  return changedKeys(was, is).every((k) => k === ctx.uid && isNow(is[k], ctx));
+}
+
+// The rest of a DM thread doc. Names are each member's real display name (the
+// sender refreshes both on every message, so a rename shows up), seen
+// pointers are each side's own, and the preview is always the caller's own
+// latest message, stamped now — never words put in the other person's mouth.
+function threadFieldsOk(before: Data | null, after: Data, ctx: Ctx): boolean {
+  if (!onlyKeys(after, ["uids", "names", "lastText", "lastFrom", "lastAt", "seenAt", "clearedAt"])) {
+    return false;
+  }
+  const was = (before?.names ?? {}) as Data;
+  const is = (after.names ?? {}) as Data;
+  if (typeof is !== "object" || Array.isArray(is)) return false;
+  const uids = Array.isArray(after.uids) ? after.uids : [];
+  const namesOk = changedKeys(was, is).every(
+    (k) => uids.includes(k) && is[k] === getDoc(`users/${k}`)?.data.username
+  );
+  const changed = changedKeys(before, after);
+  const previewOk =
+    !changed.some((k) => k === "lastText" || k === "lastFrom" || k === "lastAt") ||
+    (after.lastFrom === ctx.uid && isNow(after.lastAt, ctx) && isString(after.lastText, 120));
+  return namesOk && previewOk && ownStampOnly(before, after, "seenAt", ctx) &&
+    ownStampOnly(before, after, "clearedAt", ctx);
+}
+
+// The browsers' own push services. The server posts to whatever endpoint a
+// member registers, so anything else would let a member point it at a machine
+// on the host's home network.
+export const PUSH_SERVICE =
+  /^https:\/\/(fcm\.googleapis\.com|updates\.push\.services\.mozilla\.com|web\.push\.apple\.com|[a-z0-9-]+\.notify\.windows\.com)\//;
 
 // --- reads -----------------------------------------------------------------
 
@@ -162,7 +220,9 @@ export function canWrite(
       ) {
         return false;
       }
-      return after.mascot == null || isString(after.mascot, 20);
+      // Activity stamps are the server's clock, never a value the client picks.
+      const stamp = (k: string) => deepEqual(before[k], after[k]) || isNow(after[k], ctx);
+      return stamp("appAt") && stamp("lastPostAt") && (after.mascot == null || isString(after.mascot, 20));
     }
 
     // config/{docId} -> instance-wide settings the admin edits (announcement).
@@ -183,8 +243,11 @@ export function canWrite(
       const own =
         after?.uid === uid &&
         isString(after.endpoint, 1000, 1) &&
-        /^https:\/\/[^\s/]+\.[^\s/]+\//.test(after.endpoint) &&
+        PUSH_SERVICE.test(after.endpoint) &&
         URL.canParse(after.endpoint) &&
+        // One endpoint, one document: copying a friend's endpoint lands on
+        // their document, which only they can write.
+        p[1] === createHash("sha256").update(after.endpoint).digest("hex") &&
         isString(after.p256dh, 300, 1) &&
         isString(after.auth, 300, 1);
       const sameDevice =
@@ -214,8 +277,20 @@ export function canWrite(
       if (!getDoc(`users/${p[1]}`) || blockedBetween(uid, p[1])) return false;
       if (!onlyKeys(after, ["type", "actorUid", "actorName", "postId", "text", "at"])) return false;
       if (after.actorUid !== uid || after.actorName !== ownUsername(ctx)) return false;
-      if (!isString(after.postId, 120) || !isNow(after.at, ctx)) return false;
+      if (!isNow(after.at, ctx)) return false;
+      // Every item is about a real, live post: the bell shows its photo and
+      // links to it. A "like" must be a like that happened, on the
+      // recipient's own photo; a "post" only the author's own, while fresh.
+      const post = livePost(after.postId);
+      if (!post) return false;
       const type = after.type;
+      if (type === "like" && !(post.userUUID === p[1] && Array.isArray(post.likedBy) && post.likedBy.includes(uid))) {
+        return false;
+      }
+      if (type === "post") {
+        const posted = millis(post.timestamp);
+        if (post.userUUID !== uid || posted === null || now - posted > ANNOUNCE_WINDOW_MS) return false;
+      }
       if (type === "post" || type === "comment" || type === "mention") {
         return notMuted(ctx) && (after.text === undefined || isString(after.text, 200));
       }
@@ -274,7 +349,8 @@ export function canWrite(
             p[1] === `${uids[0]}_${uids[1]}` &&
             uids.every((u) => !!getDoc(`users/${u}`)) &&
             !blockedBetween(String(uids[0]), String(uids[1])) &&
-            after.clearedAt === undefined
+            after.clearedAt === undefined &&
+            threadFieldsOk(null, after, ctx)
           );
         }
         // Deleting a conversation only hides your own copy: a write may touch
@@ -289,6 +365,7 @@ export function canWrite(
         return (
           deepEqual(before?.uids, uids) &&
           changedKeys(was, is).every((k) => k === uid) &&
+          threadFieldsOk(before, after, ctx) &&
           JSON.stringify(after).length < 4000
         );
       }
@@ -326,7 +403,20 @@ export function canWrite(
         const seenOk = before
           ? deepEqual(after.adminSeenAt ?? null, before.adminSeenAt ?? null)
           : after.adminSeenAt === undefined;
-        return nameOk && seenOk && JSON.stringify(after).length < 4000;
+        // The preview is the member's own latest note, stamped now.
+        const changed = changedKeys(before, after);
+        const previewOk =
+          !changed.some((k) => k === "lastText" || k === "lastFrom" || k === "lastAt") ||
+          (after.lastFrom === "user" && isNow(after.lastAt, ctx) && isString(after.lastText, 120));
+        const ownSeenOk = !changed.includes("userSeenAt") || isNow(after.userSeenAt, ctx);
+        return (
+          onlyKeys(after, ["uid", "username", "lastText", "lastFrom", "lastAt", "userSeenAt", "adminSeenAt"]) &&
+          nameOk &&
+          seenOk &&
+          previewOk &&
+          ownSeenOk &&
+          JSON.stringify(after).length < 4000
+        );
       }
       if (p.length === 4 && p[2] === "notes") {
         return (

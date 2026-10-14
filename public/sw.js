@@ -1,20 +1,44 @@
 // Service worker: offline-tolerant app shell + push notifications.
 // Only pages and static assets are handled — API and photo requests pass
 // straight through untouched (they carry the session and must never be cached).
-const CACHE = "nopostnow-v3";
+//
+// Two caches, each with a size cap: pages (one shell per route visited) and
+// static files (hashed build chunks pile up across updates otherwise). Both
+// names carry a version; bumping it on activate drops everything older.
+const PAGES = "nopostnow-pages-v4";
+const STATIC = "nopostnow-static-v4";
+const MAX_PAGES = 40;
+const MAX_STATIC = 300;
 
 // Only a real, successful answer is worth keeping: a cached error page or a
 // cached "sign in" would be served long after the problem went away.
-function keep(request, res) {
-  if (!res.ok || res.type !== "basic" || res.redirected) return;
-  const copy = res.clone();
-  caches.open(CACHE).then((cache) => cache.put(request, copy));
+const keepable = (res) => res && res.ok && res.type === "basic" && !res.redirected;
+
+// Caches list their entries oldest-first, so trimming from the front drops
+// whatever has gone longest without being refreshed. "/" is never dropped:
+// it's the shell every offline page falls back to.
+async function trim(name, max) {
+  const cache = await caches.open(name);
+  const keys = await cache.keys();
+  const extra = keys.length - max;
+  if (extra <= 0) return;
+  const drop = keys.filter((k) => new URL(k.url).pathname !== "/").slice(0, extra);
+  await Promise.all(drop.map((k) => cache.delete(k)));
+}
+
+async function store(name, max, request, res) {
+  if (!keepable(res)) return;
+  const cache = await caches.open(name);
+  // Re-adding moves an entry to the back, so trim drops the stale ones.
+  await cache.delete(request);
+  await cache.put(request, res);
+  await trim(name, max);
 }
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches
-      .open(CACHE)
+      .open(PAGES)
       .then((cache) => cache.addAll(["/"]))
       .then(() => self.skipWaiting())
   );
@@ -24,7 +48,9 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then((keys) =>
+        Promise.all(keys.filter((k) => k !== PAGES && k !== STATIC).map((k) => caches.delete(k)))
+      )
       .then(() => self.clients.claim())
   );
 });
@@ -40,7 +66,7 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(
       fetch(request)
         .then((res) => {
-          keep(request, res);
+          event.waitUntil(store(PAGES, MAX_PAGES, request, res.clone()));
           return res;
         })
         .catch(() =>
@@ -51,17 +77,30 @@ self.addEventListener("fetch", (event) => {
   }
 
   // Hashed build assets are immutable: cache first.
-  if (url.pathname.startsWith("/_next/static/") || url.pathname.match(/\.(png|ico)$/)) {
+  if (url.pathname.startsWith("/_next/static/")) {
     event.respondWith(
       caches.match(request).then(
         (hit) =>
           hit ||
           fetch(request).then((res) => {
-            keep(request, res);
+            event.waitUntil(store(STATIC, MAX_STATIC, request, res.clone()));
             return res;
           })
       )
     );
+    return;
+  }
+
+  // Icons keep the same name when they're redrawn, so they can't be cache-
+  // first for good: show the cached one at once, and fetch the current one
+  // behind it for next time.
+  if (url.pathname.match(/\.(png|ico)$/)) {
+    const refresh = fetch(request).then((res) => {
+      event.waitUntil(store(STATIC, MAX_STATIC, request, res.clone()));
+      return res;
+    });
+    event.waitUntil(refresh.catch(() => {}));
+    event.respondWith(caches.match(request).then((hit) => hit || refresh));
   }
 });
 
@@ -92,10 +131,19 @@ self.addEventListener("push", (event) => {
 // /p/{postId} for posts/comments/likes and /dm/{threadId} for texts.
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const url = new URL(
-    (event.notification.data && event.notification.data.url) || "/",
-    self.location.origin
-  ).href;
+  // Only ever this app: a payload url like "//example.com" resolves to
+  // another site, and a notification must never be a link out.
+  let target;
+  try {
+    target = new URL(
+      (event.notification.data && event.notification.data.url) || "/",
+      self.location.origin
+    );
+  } catch {
+    target = null;
+  }
+  const url =
+    target && target.origin === self.location.origin ? target.href : `${self.location.origin}/`;
   event.waitUntil(
     (async () => {
       const wins = await clients.matchAll({ type: "window", includeUncontrolled: true });

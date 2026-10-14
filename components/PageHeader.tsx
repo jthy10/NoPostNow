@@ -17,7 +17,7 @@ export default function PageHeader({
 }) {
   return (
     <>
-      <nav className="fixed inset-x-0 top-0 z-40 border-b-[0.5px] border-line bg-canvas pt-[env(safe-area-inset-top)]">
+      <nav data-app-header className="fixed inset-x-0 top-0 z-40 border-b-[0.5px] border-line bg-canvas pt-[env(safe-area-inset-top)]">
         <div className="flex h-[52px] items-center gap-1.5 px-3">
           <Link
             href={backHref}

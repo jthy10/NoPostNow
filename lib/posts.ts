@@ -19,7 +19,8 @@ import {
   QueryDocumentSnapshot,
   DocumentData,
 } from "./store";
-import { uploadFile, safeFileName } from "./files";
+import { ApiError } from "./api";
+import { discardUpload, uploadFile, safeFileName } from "./files";
 import { invalidateFeedCache } from "./feed-cache";
 import { isSpecialDate, readsDailyMoment } from "./site";
 
@@ -160,6 +161,51 @@ export async function fetchPosts(
   };
 }
 
+// Checked before uploading, so a file the server would refuse says so up
+// front rather than after a long upload. The server checks again from the
+// file's own bytes; a file with no type (some Android pickers) is left to it.
+export const MAX_PHOTO_BYTES = 25 * 1024 * 1024;
+const PHOTO_TYPES = /^image\/(jpe?g|png|webp|gif|heic|heif|avif)$/i;
+const isHeic = (file: File) =>
+  /^image\/hei[cf]$/i.test(file.type) || /\.hei[cf]$/i.test(file.name);
+
+// A user-facing reason this file can't be posted, or null when it can.
+export function photoProblem(file: File): string | null {
+  if (file.type && !PHOTO_TYPES.test(file.type)) {
+    return "That file type can't be posted — choose a JPEG, PNG, HEIC, WebP, GIF or AVIF photo.";
+  }
+  if (file.size > MAX_PHOTO_BYTES) {
+    const mb = (file.size / 1024 / 1024).toFixed(1);
+    return `That photo is ${mb} MB — the limit is 25 MB.`;
+  }
+  return null;
+}
+
+// Plain words for why an upload or a post didn't go through.
+export function uploadErrorMessage(e: unknown): string {
+  if (e instanceof ApiError) {
+    if (e.status === 401) return "You've been signed out — sign in again and retry.";
+    if (e.status === 403) {
+      return "This photo couldn't be posted. If you've been muted, you can still browse and like.";
+    }
+    if (e.status === 413) return "That photo is too large — the limit is 25 MB.";
+    if (e.status === 415) return "That file isn't a photo the site can show.";
+    if (e.status === 507) return "The server is out of space right now — tell the admins.";
+  }
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    return "You're offline — reconnect and try again.";
+  }
+  if (e instanceof ApiError && e.status === 0) {
+    return "Couldn't reach the server — check your connection and try again.";
+  }
+  return "Upload failed — please try again.";
+}
+
+// How far along the progress bar each stage of posting ends: the original
+// upload, then the display copy. Only the saved post itself reaches 100%.
+const UPLOAD_SHARE = 0.85;
+const VARIANT_SHARE = 0.95;
+
 export async function createPost(opts: {
   file: File;
   caption: string;
@@ -179,39 +225,71 @@ export async function createPost(opts: {
     display = await renderDisplayVariant(bmp);
     bmp.close();
   } catch {
-    // Non-decodable in this browser (e.g. HEIC on desktop) — post without dims.
+    // Non-decodable in this browser — post without dims.
+  }
+
+  // HEIC is a Safari-only format: Chrome, Firefox and Android can't draw it,
+  // so for them the JPEG display copy is the only version of the photo there
+  // is. A HEIC that this browser couldn't turn into one would post as a blank
+  // card for most of the group — say so instead of posting it.
+  const heic = isHeic(opts.file);
+  if (heic && !display) {
+    throw new Error(
+      "This browser can't read HEIC photos. Post it from your iPhone, or save it as a JPEG first."
+    );
   }
 
   const imagePath = `photos/${opts.uid}/${safeFileName(opts.file.name)}`;
-  await uploadFile(imagePath, opts.file, opts.onProgress);
+  try {
+    // The original's bytes are most of the work, not all of it: the display
+    // copy and the post itself still have to land. Reporting the raw upload
+    // fraction showed "100%" while the post could still fail.
+    await uploadFile(imagePath, opts.file, (f) => opts.onProgress?.(UPLOAD_SHARE * f));
+  } catch (e) {
+    throw new Error(uploadErrorMessage(e));
+  }
 
   // Variant failure must never block a post — the feed falls back to the
-  // original whenever the display copy is missing.
-  if (display && display.size < opts.file.size) {
+  // original whenever the display copy is missing. Normally only worth it
+  // when it's smaller, but a HEIC always gets one, however big, since the
+  // original won't show outside Safari.
+  let displayUploaded = false;
+  if (display && (heic || display.size < opts.file.size)) {
     try {
       await uploadFile(displayVariantPath(imagePath), display);
+      displayUploaded = true;
     } catch {
       /* fall back to original in the feed */
     }
   }
+  opts.onProgress?.(VARIANT_SHARE);
 
   // The capture stamp rides along only when it's sane — the server rejects
   // wildly-off values, and a rejected stamp must never fail the whole post.
   const capturedMs = cameraOpenedAtMs;
   cameraOpenedAtMs = null;
 
-  const docRef = await addDoc(collection(db, "photos"), {
-    userUUID: opts.uid,
-    username: opts.username,
-    imagePath,
-    caption: opts.caption,
-    timestamp: serverTimestamp(),
-    likedBy: [],
-    ...(dims ? { imageWidth: dims.width, imageHeight: dims.height } : {}),
-    ...(capturedMs && Date.now() - capturedMs < 60 * 60 * 1000
-      ? { capturedAt: Timestamp.fromMillis(capturedMs) }
-      : {}),
-  });
+  let docRef;
+  try {
+    docRef = await addDoc(collection(db, "photos"), {
+      userUUID: opts.uid,
+      username: opts.username,
+      imagePath,
+      caption: opts.caption,
+      timestamp: serverTimestamp(),
+      likedBy: [],
+      ...(dims ? { imageWidth: dims.width, imageHeight: dims.height } : {}),
+      ...(capturedMs && Date.now() - capturedMs < 60 * 60 * 1000
+        ? { capturedAt: Timestamp.fromMillis(capturedMs) }
+        : {}),
+    });
+  } catch (e) {
+    // The post never saved, so its files point at nothing. Take them back.
+    void discardUpload(imagePath).catch(() => {});
+    if (displayUploaded) void discardUpload(displayVariantPath(imagePath)).catch(() => {});
+    throw new Error(uploadErrorMessage(e));
+  }
+  opts.onProgress?.(1);
 
   // Stamp "last active" on the poster's own profile. The @mention picker
   // ranks by it. Best-effort — a failure only affects picker order.

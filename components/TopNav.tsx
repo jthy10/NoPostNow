@@ -47,6 +47,7 @@ export default function TopNav({
   return (
     <>
       <nav
+        data-app-header
         // pt-[env(safe-area-inset-top)] keeps the bar below the notch/Dynamic
         // Island when installed to the home screen (0 in normal browsers).
         className={`fixed inset-x-0 top-0 z-40 border-b-[0.5px] border-line bg-canvas pt-[env(safe-area-inset-top)] transition-transform duration-300 ${
@@ -62,8 +63,12 @@ export default function TopNav({
             <Link
               href="/"
               aria-label="Go to feed"
-              onClick={() => {
+              onClick={(e) => {
                 if (pathname !== "/") return;
+                // Already here: just scroll. Letting the Link through re-fetches
+                // the page, and offline that fetch fails into a full reload —
+                // which strands the app on the cached "Loading" shell.
+                e.preventDefault();
                 const scroller = scrollRef?.current;
                 if (scroller) scroller.scrollTo({ top: 0, behavior: "smooth" });
                 else window.scrollTo({ top: 0, behavior: "smooth" });

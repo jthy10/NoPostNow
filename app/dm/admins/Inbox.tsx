@@ -56,7 +56,9 @@ export default function Inbox() {
           send desktop back where the Notes button lives instead. */}
       <PageHeader backHref={standalone === false ? "/profile" : "/dm"} title={adminChatName()} />
 
-      <main className="mx-auto min-h-0 w-full max-w-lg flex-1 overflow-y-auto overscroll-contain pb-8 pt-[calc(52px+env(safe-area-inset-top))]">
+      {/* Full-width scroller: in landscape the blank space beside the column scrolls too. */}
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      <main className="mx-auto w-full max-w-lg pb-8 pt-[calc(52px+env(safe-area-inset-top))]">
         <div className="border-b-[0.5px] border-field px-4 py-3">
           <p className="text-[11px] font-semibold uppercase tracking-[1.5px] text-meta">
             {waiting > 0
@@ -120,6 +122,7 @@ export default function Inbox() {
           );
         })}
       </main>
+      </div>
     </ViewportShell>
   );
 }

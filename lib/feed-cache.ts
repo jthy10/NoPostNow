@@ -28,6 +28,10 @@ export type FeedSnapshot = {
   anchorOffset?: number;
   scrollTop: number; // fallback when the anchored post is gone (deleted, blocked)
   uid: string; // owner — a different account signing in must not inherit it
+  // When the newest of these posts was last checked against the server. A
+  // restore older than the archive's max age also asks for the top page, so
+  // a feed you keep coming back to all afternoon still picks up new posts.
+  checkedAt: number;
 };
 
 let snapshot: FeedSnapshot | null = null;
@@ -60,6 +64,10 @@ export function readArchive(): Post[] | null {
 // up on the first look at the app, long enough that flicking between tabs
 // doesn't re-read the whole collection every time.
 const ARCHIVE_MAX_AGE_MS = 3 * 60 * 1000;
+
+export function feedIsStale(checkedAt: number): boolean {
+  return Date.now() - checkedAt > ARCHIVE_MAX_AGE_MS;
+}
 
 export function archiveIsStale(): boolean {
   return !archive || Date.now() - archiveAt > ARCHIVE_MAX_AGE_MS;

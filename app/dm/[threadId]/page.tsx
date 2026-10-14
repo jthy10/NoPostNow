@@ -15,37 +15,31 @@ import {
   markThreadSeen,
   isThreadUnread,
   peerUidOf,
+  threadIdFor,
   MAX_DM_LENGTH,
   type Message,
 } from "@/lib/dms";
 import { notifyDm } from "@/lib/push";
 import { useKeyboardInset } from "@/lib/sheet";
+import { afterSend, isSendEnter } from "@/lib/keys";
 import Avatar from "@/components/Avatar";
 import DmInstallPitch from "@/components/DmInstallPitch";
 import ViewportShell from "@/components/ViewportShell";
+import { stampLabel } from "@/lib/dates";
 
 // Show a timestamp divider when more than an hour passed between messages.
 const STAMP_GAP_MS = 3_600_000;
 
-function stampLabel(m: Message) {
-  if (!m.at) return "";
-  const d = m.at.toDate();
-  const time = d
-    .toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
-    .toUpperCase();
-  const now = new Date();
-  const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate());
-  const dayDiff = (startOfDay(now).getTime() - startOfDay(d).getTime()) / 86_400_000;
-  if (dayDiff === 0) return `TODAY ${time}`;
-  if (dayDiff === 1) return `YESTERDAY ${time}`;
-  const date = d
-    .toLocaleDateString(undefined, {
-      month: "short",
-      day: "numeric",
-      year: d.getFullYear() === now.getFullYear() ? undefined : "numeric",
-    })
-    .toUpperCase();
-  return `${date}, ${time}`;
+// Messages per page; "Load earlier" raises the window by this much again.
+const PAGE = 200;
+
+// How close to the bottom still counts as "reading the latest" — within this,
+// a new message pulls the view down with it; further up, you're reading
+// history and it stays put.
+const FOLLOW_SLACK_PX = 120;
+
+function stampOf(m: Message) {
+  return m.at ? stampLabel(m.at.toDate()) : "";
 }
 
 export default function ThreadPage({
@@ -61,6 +55,10 @@ export default function ThreadPage({
 
   const member = Boolean(myUid && threadId.split("_").length === 2 && threadId.split("_").includes(myUid));
   const peerUid = myUid ? peerUidOf(threadId, myUid) : null;
+  // Thread ids are the two uids sorted. The same pair the other way round is
+  // a link to a conversation that doesn't exist — it'd open empty while the
+  // real one sits under the sorted id — so send it to the real one.
+  const canonicalId = member && myUid && peerUid ? threadIdFor(myUid, peerUid) : threadId;
   // A blocked thread vanishes from /dm, but the URL outlives the list — an
   // open tab, a bookmark, an old push. Without this the person you blocked
   // keeps typing into a thread you can no longer see, and each message pings
@@ -73,9 +71,11 @@ export default function ThreadPage({
   // Hold the message listener until the thread doc lands. It carries the
   // clear pointer, and subscribing before it arrives would flash the history
   // you deleted for the moment between the two snapshots.
-  const messages = useMessages(
-    member && thread !== undefined ? threadId : undefined,
-    myUid && thread ? thread.clearedAt?.[myUid] : null
+  const [max, setMax] = useState(PAGE);
+  const { messages, full } = useMessages(
+    member && canonicalId === threadId && thread !== undefined ? threadId : undefined,
+    myUid && thread ? thread.clearedAt?.[myUid] : null,
+    max
   );
 
   const [text, setText] = useState("");
@@ -83,6 +83,13 @@ export default function ThreadPage({
   const [sendError, setSendError] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const lastCount = useRef(0);
+  const lastNewestId = useRef<string | null>(null);
+  // Whether the reader was at the bottom as of their last scroll — read when
+  // a message lands, before the new height has been laid out.
+  const atBottom = useRef(true);
+  // Height before "Load earlier" grew the list, so the view can stay on the
+  // message it was showing instead of jumping.
+  const heightBeforeOlder = useRef<number | null>(null);
   const { inset, visibleHeight } = useKeyboardInset();
 
   // iOS pans the whole layout viewport up to reveal a focused input, which
@@ -115,7 +122,8 @@ export default function ThreadPage({
   // see here.
   useEffect(() => {
     if (user && (!member || blockedPeer)) router.replace("/dm");
-  }, [user, member, blockedPeer, router]);
+    else if (user && canonicalId !== threadId) router.replace(`/dm/${canonicalId}`);
+  }, [user, member, blockedPeer, canonicalId, threadId, router]);
 
   // Reading the thread clears its unread state (list dot + chat badge).
   useEffect(() => {
@@ -126,21 +134,58 @@ export default function ThreadPage({
     }
   }, [standalone, myUid, thread, threadId]);
 
-  // Stick to the bottom: jump on first load, smooth-follow new messages,
-  // and re-pin when the keyboard resizes the list.
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < FOLLOW_SLACK_PX;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  });
+
+  // Stick to the bottom: jump on first load, smooth-follow new messages and
+  // re-pin when the keyboard resizes the list — but only while the reader is
+  // at the bottom (or the new message is their own). Scrolled up reading
+  // history, an incoming message must not yank them away from it.
   useEffect(() => {
     const el = listRef.current;
     if (!el || !messages) return;
-    const smooth = lastCount.current > 0 && messages.length > lastCount.current;
+    const newest = messages[messages.length - 1];
+    const grewAtEnd = newest?.id !== lastNewestId.current;
+    const first = lastCount.current === 0;
+    const smooth = !first && grewAtEnd;
     lastCount.current = messages.length;
+    lastNewestId.current = newest?.id ?? null;
+
+    const before = heightBeforeOlder.current;
+    if (before !== null && !grewAtEnd) {
+      // Older messages were prepended: hold the view where it was.
+      heightBeforeOlder.current = null;
+      requestAnimationFrame(() => {
+        el.scrollTop += el.scrollHeight - before;
+      });
+      return;
+    }
+    // Your own message just sent is the one exception: you want to see it.
+    if (!first && !atBottom.current && !(grewAtEnd && newest?.from === myUid)) return;
     requestAnimationFrame(() => {
       el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+      atBottom.current = true;
     });
-  }, [messages, inset]);
+  }, [messages, inset, myUid]);
 
   // Hold the loading state until the block lists land, so a blocked thread
   // never flashes its history on the way to the redirect.
-  if (loading || !user || !member || !blocksReady || blockedPeer || standalone === null) {
+  if (
+    loading ||
+    !user ||
+    !member ||
+    canonicalId !== threadId ||
+    !blocksReady ||
+    blockedPeer ||
+    standalone === null
+  ) {
     return (
       <div className="fixed inset-0 flex items-center justify-center text-sm font-semibold uppercase tracking-[2px] text-mut">
         Loading
@@ -159,6 +204,7 @@ export default function ThreadPage({
   async function handleSend() {
     const trimmed = text.trim();
     if (!trimmed || busy || !myUid || !peerUid || blockedPeer) return;
+    const sent = text;
     setBusy(true);
     setSendError(false);
     try {
@@ -170,7 +216,7 @@ export default function ThreadPage({
         text: trimmed,
       });
       void notifyDm(trimmed, peerUid, threadId);
-      setText("");
+      setText((current) => afterSend(current, sent));
     } catch {
       setSendError(true);
     } finally {
@@ -226,6 +272,18 @@ export default function ThreadPage({
           </div>
         )}
 
+        {full && (
+          <button
+            onClick={() => {
+              heightBeforeOlder.current = listRef.current?.scrollHeight ?? null;
+              setMax((n) => n + PAGE);
+            }}
+            className="mb-2 self-center rounded-full border-[0.5px] border-edge px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-[1px] text-meta transition-opacity active:opacity-60"
+          >
+            Load earlier messages
+          </button>
+        )}
+
         {messages === null && (
           <p className="py-8 text-center text-[11px] font-semibold uppercase tracking-[2px] text-dim">
             Loading
@@ -247,7 +305,7 @@ export default function ThreadPage({
             <div key={m.id} className="flex flex-col">
               {showStamp && (
                 <p className="py-2.5 text-center text-[10px] font-semibold tracking-[0.5px] text-dim">
-                  {stampLabel(m)}
+                  {stampOf(m)}
                 </p>
               )}
               <div
@@ -281,7 +339,7 @@ export default function ThreadPage({
           <input
             value={text}
             onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleSend()}
+            onKeyDown={(e) => isSendEnter(e) && handleSend()}
             placeholder="Message…"
             maxLength={MAX_DM_LENGTH}
             enterKeyHint="send"

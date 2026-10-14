@@ -4,7 +4,6 @@ import { Inter } from "next/font/google";
 import "./globals.css";
 import { AuthProvider } from "@/lib/auth-context";
 import PwaSetup from "@/components/PwaSetup";
-import OrientationLock from "@/components/OrientationLock";
 import SiteProvider from "@/components/SiteProvider";
 import { publicSite } from "@/server/core/config";
 import { config } from "@/server/runtime";
@@ -71,7 +70,6 @@ export default function RootLayout({
         <SiteProvider site={site}>
           <AuthProvider>{children}</AuthProvider>
           <PwaSetup />
-          <OrientationLock />
         </SiteProvider>
       </body>
     </html>

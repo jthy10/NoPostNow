@@ -176,19 +176,85 @@ export function useSwipeDismiss(
   return { sheetRef, dragY, dragging };
 }
 
-// Esc closes the sheet — desktop nicety.
-export function useEscapeToClose(onClose: () => void) {
+// Open dialogs, innermost last — only the top one answers Escape and keeps
+// Tab, so closing a modal over a sheet doesn't close both.
+const dialogStack: symbol[] = [];
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+// Makes a sheet or modal behave as a dialog for keyboard and screen-reader
+// users: focus moves into it when it opens, Tab and Shift+Tab cycle inside it
+// instead of wandering into the page underneath, Escape closes it, and focus
+// goes back to whatever opened it. The element itself still needs
+// role="dialog", aria-modal="true", a label, and tabIndex={-1}.
+export function useDialog(
+  ref: RefObject<HTMLElement | null>,
+  onClose: () => void,
+  active = true
+) {
   const closeRef = useRef(onClose);
   useEffect(() => {
     closeRef.current = onClose;
   });
+
   useEffect(() => {
+    if (!active) return;
+    const id = Symbol("dialog");
+    dialogStack.push(id);
+    const opener = document.activeElement as HTMLElement | null;
+    const isTop = () => dialogStack[dialogStack.length - 1] === id;
+
+    // After paint, so the element is in the DOM and its animation started.
+    const raf = requestAnimationFrame(() => {
+      const el = ref.current;
+      if (!el || el.contains(document.activeElement)) return;
+      // Not straight into a text field: on a phone that pops the keyboard
+      // over the sheet the moment it opens.
+      const first = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].find(
+        (n) => !(n instanceof HTMLInputElement || n instanceof HTMLTextAreaElement)
+      );
+      (first ?? el).focus({ preventScroll: true });
+    });
+
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeRef.current();
+      if (!isTop()) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeRef.current();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const el = ref.current;
+      if (!el) return;
+      const items = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+        (n) => n.offsetParent !== null || n === document.activeElement
+      );
+      if (items.length === 0) {
+        e.preventDefault();
+        el.focus();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      const inside = el.contains(document.activeElement);
+      if (e.shiftKey && (document.activeElement === first || !inside)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (document.activeElement === last || !inside)) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("keydown", onKey);
+      const at = dialogStack.indexOf(id);
+      if (at !== -1) dialogStack.splice(at, 1);
+      if (opener && document.contains(opener)) opener.focus({ preventScroll: true });
+    };
+  }, [active, ref]);
 }
 
 // Freeze the page behind an open sheet — iOS otherwise scrolls the body when

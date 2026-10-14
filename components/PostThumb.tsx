@@ -9,7 +9,14 @@ import { useAuthedImage } from "@/lib/use-authed-image";
 // per session; deleted posts resolve to null and render nothing.
 const pathCache = new Map<string, Promise<string | null>>();
 
+// Bell items are written by other members' clients, so postId is only as good
+// as the server's rules make it. Anything that isn't a plain id has no photo.
+function isPostId(id: unknown): id is string {
+  return typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(id);
+}
+
 function imagePathFor(postId: string): Promise<string | null> {
+  if (!isPostId(postId)) return Promise.resolve(null);
   let hit = pathCache.get(postId);
   if (!hit) {
     hit = getDoc(doc(db, "photos", postId))

@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useKeyboardInset } from "@/lib/sheet";
 import ViewportShell from "@/components/ViewportShell";
 import { MAX_NOTE_LENGTH, type AdminNote } from "@/lib/admin-chat";
+import { stampLabel } from "@/lib/dates";
+import { afterSend, isSendEnter } from "@/lib/keys";
 
 // The conversation screen shared by both sides of the admins chat:
 // a member writing to the admin, and the admin answering one member. Same
@@ -14,25 +16,11 @@ import { MAX_NOTE_LENGTH, type AdminNote } from "@/lib/admin-chat";
 // Show a timestamp divider when more than an hour passed between notes.
 const STAMP_GAP_MS = 3_600_000;
 
-function stampLabel(at: AdminNote["at"]) {
-  if (!at) return "";
-  const d = at.toDate();
-  const time = d
-    .toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
-    .toUpperCase();
-  const now = new Date();
-  const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate());
-  const dayDiff = (startOfDay(now).getTime() - startOfDay(d).getTime()) / 86_400_000;
-  if (dayDiff === 0) return `TODAY ${time}`;
-  if (dayDiff === 1) return `YESTERDAY ${time}`;
-  const date = d
-    .toLocaleDateString(undefined, {
-      month: "short",
-      day: "numeric",
-      year: d.getFullYear() === now.getFullYear() ? undefined : "numeric",
-    })
-    .toUpperCase();
-  return `${date}, ${time}`;
+// Within this of the bottom, a new note pulls the view down with it.
+const FOLLOW_SLACK_PX = 120;
+
+function stampOf(at: AdminNote["at"]) {
+  return at ? stampLabel(at.toDate()) : "";
 }
 
 export default function ChatRoom({
@@ -72,6 +60,16 @@ export default function ChatRoom({
   const [sendError, setSendError] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const lastCount = useRef(0);
+  const atBottom = useRef(true);
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < FOLLOW_SLACK_PX;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
   const { inset, visibleHeight } = useKeyboardInset();
 
   // iOS pans the whole layout viewport up to reveal a focused input, dragging
@@ -95,16 +93,21 @@ export default function ChatRoom({
   }, []);
 
   // Stick to the bottom: jump on first load, smooth-follow new notes, re-pin
-  // when the keyboard resizes the list.
+  // when the keyboard resizes the list — unless the reader has scrolled up
+  // into history and the new note isn't their own.
   useEffect(() => {
     const el = listRef.current;
     if (!el || !notes) return;
-    const smooth = lastCount.current > 0 && notes.length > lastCount.current;
+    const first = lastCount.current === 0;
+    const grew = !first && notes.length > lastCount.current;
     lastCount.current = notes.length;
+    // Your own note just sent is the one exception: you want to see it.
+    if (!first && !atBottom.current && !(grew && notes[notes.length - 1]?.from === mineSide)) return;
     requestAnimationFrame(() => {
-      el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+      el.scrollTo({ top: el.scrollHeight, behavior: grew ? "smooth" : "auto" });
+      atBottom.current = true;
     });
-  }, [notes, inset]);
+  }, [notes, inset, mineSide]);
 
   // The receipt hangs off the member's most recent word — it disappears once
   // the admin actually answers, which is the whole point of it.
@@ -113,11 +116,12 @@ export default function ChatRoom({
   async function handleSend() {
     const trimmed = text.trim();
     if (!trimmed || busy) return;
+    const sent = text;
     setBusy(true);
     setSendError(false);
     try {
       await onSend(trimmed);
-      setText("");
+      setText((current) => afterSend(current, sent));
     } catch {
       setSendError(true);
     } finally {
@@ -182,7 +186,7 @@ export default function ChatRoom({
             <div key={n.id} className="flex flex-col">
               {showStamp && (
                 <p className="py-2.5 text-center text-[10px] font-semibold tracking-[0.5px] text-dim">
-                  {stampLabel(n.at)}
+                  {stampOf(n.at)}
                 </p>
               )}
               {labelled && (
@@ -234,7 +238,7 @@ export default function ChatRoom({
           <input
             value={text}
             onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleSend()}
+            onKeyDown={(e) => isSendEnter(e) && handleSend()}
             placeholder={placeholder}
             maxLength={MAX_NOTE_LENGTH}
             enterKeyHint="send"

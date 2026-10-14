@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useDialog } from "@/lib/sheet";
 
 // Port of the original site's avatar crop flow: drag to reposition,
 // slider to zoom, output a 400px square JPEG.
@@ -17,6 +18,8 @@ export default function AvatarCropModal({
   onCropped: (blob: Blob) => void;
 }) {
   const previewRef = useRef<HTMLCanvasElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialog(dialogRef, onCancel);
   const bitmapRef = useRef<ImageBitmap | null>(null);
   const dragStart = useRef<{ x: number; y: number } | null>(null);
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
@@ -113,7 +116,14 @@ export default function AvatarCropModal({
   }
 
   return (
-    <div className="fixed inset-0 z-[60] flex animate-[fade-in_0.2s_ease-out] flex-col items-center justify-center gap-5 bg-black/90 px-6">
+    <div
+      ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Crop profile photo"
+      tabIndex={-1}
+      className="fixed inset-0 z-[60] flex animate-[fade-in_0.2s_ease-out] flex-col items-center justify-center gap-5 bg-black/90 px-6 outline-none"
+    >
       <div
         className="relative h-[280px] w-[280px] touch-none overflow-hidden rounded-full border-2 border-white bg-card"
         onPointerDown={handlePointerDown}

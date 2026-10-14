@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { isStandalone } from "@/lib/push";
 import { site } from "@/lib/site";
+import { useDialog } from "@/lib/sheet";
 
 // Chrome's install event — not in the TS DOM lib yet.
 type BeforeInstallPromptEvent = Event & { prompt: () => Promise<void> };
@@ -72,17 +73,15 @@ export default function InstallCta({ variant }: { variant: "pill" | "full" }) {
     return () => window.removeEventListener("beforeinstallprompt", onPrompt);
   }, []);
 
-  // Keep the page from scrolling behind the sheet, and let Escape close it.
+  // Keep the page from scrolling behind the sheet. useDialog handles focus
+  // and Escape.
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialog(dialogRef, () => setOpen(false), open);
   useEffect(() => {
     document.body.style.overflow = open ? "hidden" : "";
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
     return () => {
       document.body.style.overflow = "";
-      window.removeEventListener("keydown", onKey);
     };
   }, [open]);
 
@@ -119,7 +118,9 @@ export default function InstallCta({ variant }: { variant: "pill" | "full" }) {
             role="dialog"
             aria-modal="true"
             aria-label={`Install ${site().siteName}`}
-            className="max-h-[85vh] w-full max-w-sm overflow-y-auto rounded-2xl border-[0.5px] border-edge bg-card p-6 animate-[sheet-up_0.25s_ease-out]"
+            ref={dialogRef}
+            tabIndex={-1}
+            className="outline-none max-h-[85vh] w-full max-w-sm overflow-y-auto rounded-2xl border-[0.5px] border-edge bg-card p-6 animate-[sheet-up_0.25s_ease-out]"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center gap-3.5">

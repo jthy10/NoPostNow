@@ -20,7 +20,8 @@ export async function POST(request: Request) {
   const title = (str(body.title) || config().siteName).trim().slice(0, 40);
   const message = str(body.message).trim().slice(0, 160);
   if (!message) return Response.json({ error: "empty message" }, { status: 400 });
-  const url = /^\/[^\s]*$/.test(str(body.url)) ? str(body.url) : "/";
+  // A path inside this app only: "//host" and "/\\host" would leave it.
+  const url = /^\/(?![/\\])\S*$/.test(str(body.url)) ? str(body.url) : "/";
 
   const result = await sendPush({
     kind: "post",

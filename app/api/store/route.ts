@@ -1,6 +1,6 @@
 import { getSession, isSameOrigin } from "@/server/session";
 import { canRead, canWrite } from "@/server/rules";
-import { displayVariantPath, fileExists, removeFile } from "@/server/files";
+import { disposeFile, disposePostFiles, fileExists } from "@/server/files";
 import {
   announce,
   computeWrite,
@@ -118,6 +118,18 @@ export async function POST(request: Request) {
     } catch {
       return fail(413, "too-large");
     }
+    // A replaced avatar goes the way of any deleted file.
+    const parts = splitPath(path);
+    if (
+      before &&
+      parts?.length === 2 &&
+      parts[0] === "users" &&
+      typeof before.avatarPath === "string" &&
+      before.avatarPath !== after.avatarPath &&
+      before.avatarPath.startsWith(`avatars/${parts[1]}/`)
+    ) {
+      disposeFile(before.avatarPath);
+    }
     announce({ parent: parentOf(path), path, data: after });
     return Response.json({ ok: true, path });
   }
@@ -134,10 +146,7 @@ export async function POST(request: Request) {
       // Removing a post takes its comments and its image files with it.
       if (splitPath(path)?.length === 2 && path.startsWith("photos/")) {
         removeChildren(path);
-        if (typeof before.imagePath === "string") {
-          removeFile(before.imagePath);
-          removeFile(displayVariantPath(before.imagePath));
-        }
+        disposePostFiles(before);
       }
       announce({ parent: parentOf(path), path, data: before });
     }

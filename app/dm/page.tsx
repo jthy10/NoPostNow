@@ -146,7 +146,9 @@ It disappears for you only — ${name} keeps their copy, and a new message from 
         }
       />
 
-      <main className="mx-auto min-h-0 w-full max-w-lg flex-1 overflow-y-auto overscroll-contain pb-6 pt-[calc(52px+env(safe-area-inset-top))]">
+      {/* Full-width scroller: in landscape the blank space beside the column scrolls too. */}
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      <main className="mx-auto w-full max-w-lg pb-6 pt-[calc(52px+env(safe-area-inset-top))]">
         {/* Pinned above everything, and never removable — this is the chat
             that replaced a buried settings form nobody could find. */}
         <AdminChatRow uid={user.uid} admin={user.isAdmin} />
@@ -219,6 +221,7 @@ It disappears for you only — ${name} keeps their copy, and a new message from 
           );
         })}
       </main>
+      </div>
       </ViewportShell>
 
       {searching && <UserSearchSheet myUid={user.uid} onClose={() => setSearching(false)} />}

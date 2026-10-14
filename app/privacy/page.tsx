@@ -71,7 +71,8 @@ export default function PrivacyPage() {
           copy of your data, block members, and control notifications. Deleting your
           account removes your login, profile, posts and photos. Comments you left on
           other people&apos;s posts and messages you sent stay with the people who
-          received them.
+          received them. The host can choose to keep copies of deleted photos on
+          their own computer.
         </p>
         <p>
           Your browser keeps a small amount of data so the app opens quickly and stays

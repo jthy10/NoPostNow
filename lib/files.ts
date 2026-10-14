@@ -44,6 +44,12 @@ export function uploadFile(
   });
 }
 
+// Takes back an upload that never became a post or an avatar. The server
+// refuses anything another member owns or anything something still points at.
+export async function discardUpload(path: string): Promise<void> {
+  await fetch(fileUrl(path), { method: "DELETE", headers: API_HEADERS, credentials: "same-origin" });
+}
+
 export async function downloadFile(path: string): Promise<Blob> {
   const res = await fetch(fileUrl(path), { credentials: "same-origin" });
   if (!res.ok) throw new ApiError(`http-${res.status}`, res.status);
