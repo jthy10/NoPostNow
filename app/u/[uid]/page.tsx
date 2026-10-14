@@ -75,6 +75,9 @@ export default function UserProfilePage({
           .filter((p) => p.timestamp && p.deleted !== true)
           .sort((a, b) => b.timestamp!.toDate().getTime() - a.timestamp!.toDate().getTime());
         setPosts(list);
+      },
+      () => {
+        if (!cancelled) setPosts([]);
       }
     );
     return () => {
@@ -131,6 +134,19 @@ export default function UserProfilePage({
     ? posts[posts.length - 1].timestamp!.toDate()
     : null;
 
+  const uploadSheet = capturedFile && (
+    <UploadSheet
+      file={capturedFile}
+      uid={user.uid}
+      username={username || "Anonymous"}
+      onClose={() => setCapturedFile(null)}
+      onPosted={() => {
+        setCapturedFile(null);
+        router.push("/");
+      }}
+    />
+  );
+
   // Someone who blocked you gets a dead-end page, not their posts.
   if (theyBlockedMe) {
     return (
@@ -140,6 +156,7 @@ export default function UserProfilePage({
           <p className="text-sm text-mut">This profile isn&apos;t available.</p>
         </main>
         <BottomNav onCapture={setCapturedFile} />
+        {uploadSheet}
       </ViewportShell>
     );
   }
@@ -329,18 +346,7 @@ export default function UserProfilePage({
         />
       )}
 
-      {capturedFile && (
-        <UploadSheet
-          file={capturedFile}
-          uid={user.uid}
-          username={username || "Anonymous"}
-          onClose={() => setCapturedFile(null)}
-          onPosted={() => {
-            setCapturedFile(null);
-            router.push("/");
-          }}
-        />
-      )}
+      {uploadSheet}
     </>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { db, doc, setDoc, serverTimestamp } from "./store";
+import { db, doc, deleteDoc, setDoc, serverTimestamp } from "./store";
 import { apiPost } from "./api";
 import { currentUid } from "./account";
 import { site } from "./site";
@@ -127,6 +127,19 @@ export async function ensurePushSubscription(uid: string): Promise<PushOutcome> 
   return { ok: true };
 }
 
+// Signing out: this device stops receiving the departing member's
+// notifications. The browser's own subscription is kept, so the next member
+// to sign in here registers without being asked for permission again.
+export async function forgetPushSubscription() {
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    const sub = await reg?.pushManager.getSubscription();
+    if (sub) await deleteDoc(doc(db, "pushSubscriptions", await endpointDocId(sub.endpoint)));
+  } catch {
+    // Offline or unsupported — signing out must still go ahead.
+  }
+}
+
 // Ask for permission (must be called from a user gesture on iOS), then subscribe.
 export async function requestPushPermission(uid: string): Promise<PushOutcome> {
   if (!pushSupported()) return { ok: false, reason: "push unsupported" };
@@ -157,7 +170,7 @@ async function sendNotify(body: Record<string, string | string[]>) {
 export async function notifyNewPost(username: string, caption: string, postId: string) {
   const uid = currentUid();
   await Promise.allSettled([
-    sendNotify({ type: "post", caption, postId }),
+    sendNotify({ type: "post", postId }),
     uid ? recordPostNotification(uid, username, postId, caption) : Promise.resolve(),
   ]);
 }

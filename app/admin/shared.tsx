@@ -63,22 +63,6 @@ export type Feedback = {
   at: Date | null;
 };
 
-// A member's request to be credited as the owner of an Anonymous post.
-// Approving reassigns the photo's userUUID/username; declining just drops it.
-export type Claim = {
-  id: string;
-  postId: string;
-  uid: string | null;
-  username: string;
-  email: string;
-  at: Date | null;
-};
-
-// unique_users/{uid} -> { firstJoined, email }. The doc id is the uid, which
-// makes this the only uid -> email map in the database — and the only way to
-// recover the uid of a member who has never posted. Admin-readable only.
-export type Identity = { uid: string; email: string | null; firstJoined: Date | null };
-
 // blocks/{uid} -> { blocked: [uid, ...] }. The doc id is the blocker; the
 // array is everyone they've blocked. Every block check in the app — the
 // server-side push fan-out and every filtered list on the client — matches
@@ -90,13 +74,10 @@ export type Data = {
   comments: C[];
   users: U[];
   subs: S[];
-  legacy: Date[];
-  identities: Identity[];
   blocks: Block[];
   log: LogEntry[];
   announcement: Announcement | null;
   feedback: Feedback[];
-  claims: Claim[];
 };
 
 /* --------------------------------- helpers --------------------------------- */
@@ -200,12 +181,6 @@ const ICON_PATHS: Record<string, React.ReactNode> = {
       <rect x="14" y="3" width="7" height="5" rx="1.5" />
       <rect x="14" y="12" width="7" height="9" rx="1.5" />
       <rect x="3" y="16" width="7" height="5" rx="1.5" />
-    </>
-  ),
-  approvals: (
-    <>
-      <circle cx="12" cy="12" r="9" />
-      <path d="M8.5 12.2l2.4 2.4 4.6-4.9" />
     </>
   ),
   analytics: (

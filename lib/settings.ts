@@ -132,7 +132,7 @@ export async function deleteMyAccount(currentPassword: string) {
   invalidateFeedCache();
 }
 
-// A note to the developers — lands in the admin panel, and is mirrored into
+// A note to the admins — lands in the admin panel, and is mirrored into
 // the member's admins chat so there is one inbox to answer from
 // instead of two. This form is the web fallback: the chat itself lives in
 // /dm, which only the installed app can reach.

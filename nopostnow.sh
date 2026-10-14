@@ -59,8 +59,9 @@ else
 fi
 export PATH
 
-if [ ! -d node_modules ]; then
-  echo "Installing dependencies (one time) ..."
+# Installed once, and again whenever an update changes what is needed.
+if [ ! -f node_modules/.package-lock.json ] || [ package-lock.json -nt node_modules/.package-lock.json ]; then
+  echo "Installing dependencies ..."
   npm ci --no-audit --no-fund
 fi
 

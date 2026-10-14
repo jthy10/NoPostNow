@@ -38,6 +38,17 @@ async function isSecureRequest(): Promise<boolean> {
   return proto ? proto.split(",")[0].trim() === "https" : false;
 }
 
+async function setSessionCookie(token: string) {
+  const secure = await isSecureRequest();
+  (await cookies()).set(secure ? SECURE_SESSION_COOKIE : SESSION_COOKIE, token, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure,
+    path: "/",
+    maxAge: SESSION_DAYS * 86_400,
+  });
+}
+
 export async function startSession(uid: string, opts: { mfa: boolean }) {
   const token = randomToken();
   const now = Date.now();
@@ -47,14 +58,7 @@ export async function startSession(uid: string, opts: { mfa: boolean }) {
     )
     .run(hashToken(token), uid, now, now, now, opts.mfa ? 1 : 0);
   db().prepare("DELETE FROM sessions WHERE last_seen < ?").run(now - SESSION_MS);
-  const secure = await isSecureRequest();
-  (await cookies()).set(secure ? SECURE_SESSION_COOKIE : SESSION_COOKIE, token, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure,
-    path: "/",
-    maxAge: SESSION_DAYS * 86_400,
-  });
+  await setSessionCookie(token);
 }
 
 // The prefixed cookie is the only one honoured over HTTPS, so a plain cookie
@@ -84,6 +88,10 @@ export async function getSession(): Promise<Session | null> {
   // Sliding expiry, written at most once an hour.
   if (now - row.last_seen > 3_600_000) {
     db().prepare("UPDATE sessions SET last_seen = ? WHERE token_hash = ?").run(now, tokenHash);
+    // Push the browser's copy out too, or it would expire 90 days after
+    // sign-in however often the member visits. Cookies can only be set while
+    // handling a request, not while rendering a page — the next request will do.
+    await setSessionCookie(token).catch(() => {});
   }
   return { tokenHash, account, authAt: row.auth_at, mfa: row.mfa === 1 };
 }

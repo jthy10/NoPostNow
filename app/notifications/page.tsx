@@ -97,9 +97,13 @@ export default function NotificationsPage() {
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
-    getNotificationsSeenAt(user.uid).then((t) => {
-      if (!cancelled) setOpenedSeenAt(t);
-    });
+    getNotificationsSeenAt(user.uid)
+      .then((t) => {
+        if (!cancelled) setOpenedSeenAt(t);
+      })
+      .catch(() => {
+        if (!cancelled) setOpenedSeenAt(null);
+      });
     return () => {
       cancelled = true;
     };

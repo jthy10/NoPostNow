@@ -6,7 +6,6 @@ import { useAuthedImage } from "@/lib/use-authed-image";
 import {
   toggleLike,
   deletePost,
-  assignPost,
   fetchCommentPreview,
   badgeDate,
   isMomentPost,
@@ -19,13 +18,10 @@ import {
 import { notifyLike } from "@/lib/push";
 import { useBlockSets } from "@/lib/blocks";
 import { useStreaks } from "@/lib/streaks";
-import { createClaim, fetchMyClaimedPostIds, noteClaimed } from "@/lib/claims";
-import { useAuth } from "@/lib/auth-context";
 import { downloadFile } from "@/lib/files";
 import { dailyMomentLabel, specialDateLabel } from "@/lib/site";
 import Avatar from "./Avatar";
 import StreakFlame from "./StreakFlame";
-import AssignPostSheet from "./AssignPostSheet";
 
 // Full date and time, e.g. "TODAY 3:42 PM" / "JUL 4, 3:42 PM" / "JUL 4 2025, 3:42 PM".
 // Reads badgeDate() — the same instant the daily-moment badges judge — so the
@@ -72,6 +68,7 @@ export default function PhotoCard({
   onOpenComments,
   onDeleted,
   onLikeChange,
+  onCaptionChange,
 }: {
   post: Post;
   uid: string;
@@ -84,23 +81,13 @@ export default function PhotoCard({
   // component's optimistic like state is lost and the card comes back showing
   // the pre-like count.
   onLikeChange?: (postId: string, likedBy: string[]) => void;
+  onCaptionChange?: (postId: string, caption: string) => void;
 }) {
   const src = useAuthedImage(post.imagePath, true); // compressed display copy
-  const { user } = useAuth();
   const [likedBy, setLikedBy] = useState(post.likedBy ?? []);
   const [syncedPost, setSyncedPost] = useState(post);
-  // Admin legacy cleanup: an assignment made this session overrides the
-  // (stale) post prop until the feed refetches.
-  const [assigned, setAssigned] = useState<{ uid: string; username: string } | null>(null);
-  const [assignOpen, setAssignOpen] = useState(false);
-  // A non-admin can request ownership of an Anonymous post; once they do we
-  // show "Awaiting approval" until an admin resolves it in /admin.
-  const [claimed, setClaimed] = useState(false);
-  const ownerUid = assigned?.uid ?? post.userUUID;
-  const ownerName = assigned?.username ?? post.username;
-  const isAnonymousPost = !ownerName || ownerName === "Anonymous";
-  const canAssign = user?.isAdmin === true && isAnonymousPost;
-  const canClaim = !!user && !user.isAdmin && isAnonymousPost;
+  const ownerUid = post.userUUID;
+  const ownerName = post.username;
   const [downloading, setDownloading] = useState(false);
   // Caption editing (own posts): null = not editing, string = draft text.
   // `caption` overrides the (stale) post prop after a successful save.
@@ -135,7 +122,7 @@ export default function PhotoCard({
 
   // Cards never remount across a refetch (same key={post.id} in every list
   // that renders them), so a hard refresh hands this component a brand-new
-  // `post` object but likedBy/caption/assigned — seeded from props only once,
+  // `post` object but likedBy/caption — seeded from props only once,
   // on mount — would otherwise keep showing whatever was true back then.
   // `post` only changes identity on a genuine refetch (loadMore appends reuse
   // existing references), so resyncing here — during render, not in an effect
@@ -145,7 +132,6 @@ export default function PhotoCard({
     setSyncedPost(post);
     setLikedBy(post.likedBy ?? []);
     setCaption(post.caption);
-    setAssigned(null);
   }
 
   useEffect(() => {
@@ -160,19 +146,6 @@ export default function PhotoCard({
       cancelled = true;
     };
   }, [post.id, commentsVersion]);
-
-  // Reflect a claim this member already filed (survives reloads) — one shared
-  // query backs every Anonymous card on the page.
-  useEffect(() => {
-    if (!canClaim || !user?.uid) return;
-    let alive = true;
-    fetchMyClaimedPostIds(user.uid).then((ids) => {
-      if (alive && ids.has(post.id)) setClaimed(true);
-    });
-    return () => {
-      alive = false;
-    };
-  }, [canClaim, user?.uid, post.id]);
 
   async function setLike(next: boolean) {
     if (next === liked) return;
@@ -204,7 +177,12 @@ export default function PhotoCard({
 
   async function handleDelete() {
     if (!confirm("Delete this post?")) return;
-    await deletePost(post.id);
+    try {
+      await deletePost(post.id);
+    } catch {
+      alert("Couldn't delete the post — please try again.");
+      return;
+    }
     onDeleted(post.id);
   }
 
@@ -220,40 +198,11 @@ export default function PhotoCard({
       await updateCaption(post.id, next);
       setCaption(next);
       setCaptionDraft(null);
+      onCaptionChange?.(post.id, next);
     } catch {
       alert("Couldn't save the caption — please try again.");
     } finally {
       setCaptionBusy(false);
-    }
-  }
-
-  // Admin legacy cleanup: link an Anonymous post to its real poster. The
-  // freshAdmin() rule gates the write server-side, so it only succeeds within
-  // 15 minutes of unlocking /admin.
-  async function handleAssign(u: { uid: string; username: string }) {
-    if (!confirm(`Assign this post to ${u.username}?`)) return;
-    setAssignOpen(false);
-    try {
-      await assignPost(post.id, u.uid, u.username);
-      setAssigned(u);
-    } catch {
-      alert(
-        "Couldn't assign — unlock the admin panel first (re-enter your password on /admin), then try again."
-      );
-    }
-  }
-
-  // Member-initiated: ask to be credited as this Anonymous post's owner. The
-  // request lands in the admin Approvals queue; nothing changes until approved.
-  async function handleClaim() {
-    if (!user?.uid || !user.email) return;
-    if (!confirm("Are you sure you posted this photo?")) return;
-    try {
-      await createClaim({ postId: post.id, uid: user.uid, username });
-      noteClaimed(user.uid, post.id);
-      setClaimed(true);
-    } catch {
-      alert("Couldn't submit your claim — please try again.");
     }
   }
 
@@ -296,7 +245,7 @@ export default function PhotoCard({
               // the glow spill over the header itself — above the nav
               // (z-40) but below the notch/status-bar backing (z-50), which
               // has to stay opaque for the clock/battery to stay readable.
-              "z-[45] animate-[seven-glow_3s_ease-in-out_infinite]"
+              "z-[45] animate-[moment-glow_3s_ease-in-out_infinite]"
             : ""
         }`}
         onPointerUp={handleImageTap}
@@ -377,33 +326,6 @@ export default function PhotoCard({
           </div>
         )}
         <div className="flex shrink-0 items-center gap-3">
-          {canAssign && (
-            <button
-              onClick={() => setAssignOpen(true)}
-              aria-label="Assign post to a member"
-              className="text-dim transition-colors hover:text-white"
-            >
-              <svg viewBox="0 0 24 24" className="h-4 w-4" {...icon}>
-                <circle cx="12" cy="12" r="10" />
-                <line x1="12" y1="16" x2="12" y2="12" />
-                <line x1="12" y1="8" x2="12.01" y2="8" />
-              </svg>
-            </button>
-          )}
-          {canClaim &&
-            (claimed ? (
-              <span className="rounded-full border-[0.5px] border-edge px-2 py-0.5 text-[10px] font-bold uppercase tracking-[1px] text-meta">
-                Awaiting approval
-              </span>
-            ) : (
-              <button
-                onClick={handleClaim}
-                aria-label="Claim this post as yours"
-                className="rounded-full border-[0.5px] border-edge px-2 py-0.5 text-[10px] font-bold uppercase tracking-[1px] text-mut transition-colors hover:border-mut hover:text-white"
-              >
-                Claim post
-              </button>
-            ))}
           <span className="text-[11px] font-medium text-meta">{postDateTime(post)}</span>
           <button
             onClick={handleDownload}
@@ -539,10 +461,6 @@ export default function PhotoCard({
             </button>
           )}
         </div>
-      )}
-
-      {assignOpen && (
-        <AssignPostSheet onSelect={handleAssign} onClose={() => setAssignOpen(false)} />
       )}
     </article>
   );

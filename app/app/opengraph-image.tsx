@@ -52,7 +52,6 @@ export default async function Image() {
         >
           {/* app icon with GET pill, App Store style */}
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 28 }}>
-            {/* eslint-disable-next-line @next/next/no-img-element -- satori, not the DOM */}
             <img
               src={icon}
               alt=""

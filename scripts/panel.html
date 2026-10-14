@@ -432,6 +432,8 @@ $("optionsForm").addEventListener("submit", async (e) => {
     $("adminPassword").value = "";
     dlg.close();
   } catch (err) {
+    // A new, empty data folder needs its own admin account.
+    if (err.needsAdmin) $("adminSet").hidden = false;
     if (err.needsConfirm === "confirmMove") {
       confirmMove = true;
       $("optError").textContent = err.message + " Press Save again to switch.";
@@ -457,6 +459,10 @@ $("invite").onclick = async () => {
   try { showLink((await post("/api/invite", { uses: 1 })).url); } catch (err) { $("linkError").textContent = err.message; }
 };
 $("reset").onclick = () => openLink("Password reset link", "For a member who forgot their password. The link works once and expires in 24 hours.", true);
+// Enter in the email box makes the link rather than closing the dialog.
+$("resetEmail").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); $("linkMake").click(); }
+});
 $("linkMake").onclick = async () => {
   $("linkError").textContent = "";
   try { showLink((await post("/api/reset", { email: $("resetEmail").value })).url); } catch (err) { $("linkError").textContent = err.message; }

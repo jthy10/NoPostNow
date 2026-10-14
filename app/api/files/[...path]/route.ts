@@ -17,15 +17,19 @@ export async function GET(_request: Request, { params }: Params) {
   if (!target) return new Response("Not found", { status: 404 });
 
   let stat: fs.Stats;
+  const head = Buffer.alloc(16);
   try {
-    stat = fs.statSync(target.abs);
+    const fd = fs.openSync(target.abs, "r");
+    try {
+      stat = fs.fstatSync(fd);
+      fs.readSync(fd, head, 0, 16, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
   } catch {
     return new Response("Not found", { status: 404 });
   }
-  const head = Buffer.alloc(16);
-  const fd = fs.openSync(target.abs, "r");
-  fs.readSync(fd, head, 0, 16, 0);
-  fs.closeSync(fd);
+  if (!stat.isFile()) return new Response("Not found", { status: 404 });
 
   return new Response(Readable.toWeb(fs.createReadStream(target.abs)) as ReadableStream, {
     headers: {
@@ -68,10 +72,17 @@ export async function PUT(request: Request, { params }: Params) {
   }
 
   fs.mkdirSync(path.dirname(target.abs), { recursive: true });
-  // Write beside the destination and rename, so a dropped connection never
-  // leaves half a photo where a whole one is expected.
-  const partial = `${target.abs}.part`;
-  fs.writeFileSync(partial, bytes);
-  fs.renameSync(partial, target.abs);
+  // Created exclusively, so two uploads of the same name can never replace
+  // one another, even when they arrive at the same moment.
+  try {
+    fs.writeFileSync(target.abs, bytes, { flag: "wx" });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+      return Response.json({ error: "That file already exists" }, { status: 409 });
+    }
+    // Never leave half a photo where a whole one is expected.
+    fs.rmSync(target.abs, { force: true });
+    throw err;
+  }
   return Response.json({ ok: true });
 }

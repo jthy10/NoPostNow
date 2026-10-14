@@ -96,7 +96,7 @@ export function dailyMomentTime(): string {
   return `${dailyMomentLabel()} ${hour < 12 ? "AM" : "PM"}`;
 }
 
-// "7/27"
+// "6/21" — the special date as month/day.
 export function specialDateLabel(): string {
   const [month, day] = current.dailyMoment.specialDate.split("-").map(Number);
   return month && day ? `${month}/${day}` : "";

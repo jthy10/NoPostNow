@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { createPost } from "@/lib/posts";
 import { notifyNewPost } from "@/lib/push";
-import { invalidateFeedCache } from "@/lib/feed-cache";
 import {
   useKeyboardInset,
   useBodyScrollLock,
@@ -52,9 +51,6 @@ export default function UploadSheet({
     try {
       const postId = await createPost({ file, caption, uid, username, onProgress: setProgress });
       void notifyNewPost(username, caption, postId); // fire-and-forget push + bell fan-out
-      // The cached feed no longer matches the server — landing on / must
-      // refetch so the poster sees their new photo immediately.
-      invalidateFeedCache();
       onPosted();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed.");

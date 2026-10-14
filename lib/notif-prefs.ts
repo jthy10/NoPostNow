@@ -4,7 +4,7 @@ import { db, doc, getDoc, setDoc, serverTimestamp } from "./store";
 
 // Per-user push notification preferences, keyed by uid so the notify API
 // routes (which know recipients only by uid) can look them up with one read.
-// A missing doc means the defaults: every social notification on AND the 7:27
+// A missing doc means the defaults: every social notification on AND the
 // daily prompt on — the ritual ships opt-out, so every member hears the
 // call unless they deliberately silence it. Preferences only mute pushes —
 // the in-app bell feed always records everything.
@@ -63,7 +63,7 @@ export async function saveNotifPrefs(uid: string, prefs: NotifPrefs) {
   await setDoc(doc(db, "notifPrefs", uid), {
     uid,
     ...prefs,
-    // Always restamp the timezone at save time — quiet hours and the 7:27
+    // Always restamp the timezone at save time — quiet hours and the daily
     // prompt should follow wherever the user actually is.
     tz: browserTz(),
     updatedAt: serverTimestamp(),

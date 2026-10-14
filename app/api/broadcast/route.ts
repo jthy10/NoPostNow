@@ -15,21 +15,17 @@ export async function POST(request: Request) {
   }
   if (!pushConfigured()) return Response.json({ error: "push not configured" }, { status: 503 });
 
-  const body = (await request.json().catch(() => ({}))) as {
-    title?: string;
-    message?: string;
-    url?: string;
-    test?: boolean;
-  };
-  const title = (body.title || config().siteName).trim().slice(0, 40);
-  const message = (body.message || "").trim().slice(0, 160);
+  const body = ((await request.json().catch(() => null)) ?? {}) as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === "string" ? v : "");
+  const title = (str(body.title) || config().siteName).trim().slice(0, 40);
+  const message = str(body.message).trim().slice(0, 160);
   if (!message) return Response.json({ error: "empty message" }, { status: 400 });
-  const url = body.url && /^\/[^\s]*$/.test(body.url) ? body.url : "/";
+  const url = /^\/[^\s]*$/.test(str(body.url)) ? str(body.url) : "/";
 
   const result = await sendPush({
     kind: "post",
     ignorePrefs: true,
-    to: body.test ? [session.account.uid] : undefined,
+    to: body.test === true ? [session.account.uid] : undefined,
     payload: { title, body: message, url },
   });
   return Response.json(result);

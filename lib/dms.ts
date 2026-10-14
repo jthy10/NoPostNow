@@ -257,6 +257,9 @@ export function fetchAppUids(): Promise<Set<string>> {
     for (const uid of devices?.uids ?? []) uids.add(uid);
     return uids;
   })();
+  appUidsPromise.catch(() => {
+    appUidsPromise = null;
+  });
   return appUidsPromise;
 }
 
@@ -264,9 +267,11 @@ export function useAppUids() {
   const [uids, setUids] = useState<Set<string> | null>(null);
   useEffect(() => {
     let cancelled = false;
-    fetchAppUids().then((set) => {
-      if (!cancelled) setUids(set);
-    });
+    fetchAppUids()
+      .then((set) => {
+        if (!cancelled) setUids(set);
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };

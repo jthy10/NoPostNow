@@ -79,32 +79,56 @@ export default function FeedPage() {
     if (!loading && !user) router.replace("/login");
   }, [loading, user, router]);
 
+  // Bumped by every reload from the top, so a page that was still on its way
+  // when the list was replaced is dropped instead of appended to the new one.
+  const generation = useRef(0);
+
   const loadMore = useCallback(async () => {
     if (fetching || !hasMore) return;
+    const started = generation.current;
     setFetching(true);
-    const { posts: next, nextCursor } = await fetchPosts(cursor);
-    seeded.current = true;
-    // Dedupe on append: StrictMode's double-mount (and any rapid sentinel
-    // re-trigger) can land two overlapping fetches before `fetching` commits.
-    setPosts((prev) => {
-      const seen = new Set(prev.map((p) => p.id));
-      return [...prev, ...next.filter((p) => !seen.has(p.id))];
-    });
-    setCursor(nextCursor);
-    setHasMore(Boolean(nextCursor));
-    setFetching(false);
+    try {
+      const { posts: next, nextCursor } = await fetchPosts(cursor);
+      if (started !== generation.current) return;
+      seeded.current = true;
+      // Dedupe on append: StrictMode's double-mount (and any rapid sentinel
+      // re-trigger) can land two overlapping fetches before `fetching` commits.
+      setPosts((prev) => {
+        const seen = new Set(prev.map((p) => p.id));
+        return [...prev, ...next.filter((p) => !seen.has(p.id))];
+      });
+      setCursor(nextCursor);
+      setHasMore(Boolean(nextCursor));
+    } catch {
+      // A failed page is simply asked for again on the next scroll.
+    } finally {
+      if (started === generation.current) setFetching(false);
+    }
   }, [cursor, fetching, hasMore]);
 
   // Reload from the top (after posting a new photo, or pull-to-refresh).
   const refresh = useCallback(async () => {
+    const started = ++generation.current;
     setFetching(true);
-    const { posts: next, nextCursor } = await fetchPosts();
-    seeded.current = true;
-    setPosts(next);
-    setCursor(nextCursor);
-    setHasMore(Boolean(nextCursor));
-    setFetching(false);
-    scrollRef.current?.scrollTo({ top: 0 });
+    try {
+      const { posts: next, nextCursor } = await fetchPosts();
+      if (started !== generation.current) return;
+      seeded.current = true;
+      setPosts(next);
+      setCursor(nextCursor);
+      setHasMore(Boolean(nextCursor));
+      scrollRef.current?.scrollTo({ top: 0 });
+    } catch {
+      // Offline or a blip: keep what is on screen.
+    } finally {
+      if (started === generation.current) setFetching(false);
+    }
+  }, []);
+
+  // Cards unmount when you navigate away, taking their own copy of a like or
+  // an edited caption with them — the list keeps the lasting one.
+  const patchPost = useCallback((id: string, patch: Partial<Post>) => {
+    setPosts((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
   }, []);
 
   // The reset closing-and-reopening the PWA gives you, without the relaunch:
@@ -278,6 +302,8 @@ export default function FeedPage() {
               username={username || "Anonymous"}
               commentsVersion={(commentBumps[post.id] ?? 0) + refreshEpoch}
               onOpenComments={setActiveComments}
+              onLikeChange={(id, likedBy) => patchPost(id, { likedBy })}
+              onCaptionChange={(id, caption) => patchPost(id, { caption })}
               onDeleted={(id) => setPosts((prev) => prev.filter((p) => p.id !== id))}
             />
             {/* Install nudges between every 4th post for browser users */}

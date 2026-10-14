@@ -17,7 +17,7 @@ import AdminChatAvatar from "./AdminChatAvatar";
 
 // The admins row, pinned to the top of everyone's messages list — the
 // one conversation nobody has to find. Members see their own chat with the
-// developers; the admin sees every member's notes stacked into one inbox.
+// admins; the admin sees every member's notes stacked into one inbox.
 export default function AdminChatRow({
   uid,
   admin,

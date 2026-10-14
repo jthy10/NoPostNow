@@ -59,6 +59,16 @@ function inThread(threadId: string, uid: string): boolean {
   return threadId.split("_").includes(uid);
 }
 
+// True when either member has blocked the other. The app hides blocked people
+// from each other; this stops a hand-written request reaching them anyway.
+function blockedBetween(a: string, b: string): boolean {
+  const lists = (owner: string, other: string) => {
+    const list = getDoc(`blocks/${owner}`)?.data.blocked;
+    return Array.isArray(list) && list.includes(other);
+  };
+  return lists(a, b) || lists(b, a);
+}
+
 // --- reads -----------------------------------------------------------------
 
 export function canRead(session: Session | null, path: string, data: Data | null): boolean {
@@ -81,10 +91,7 @@ export function canRead(session: Session | null, path: string, data: Data | null
     case "adminLog":
     case "feedback":
       return admin;
-    case "claims":
-      return admin || data?.uid === uid;
     case "notifPrefs":
-    case "unique_users":
       return p[1] === uid;
     case "pushSubscriptions":
       return admin || data?.uid === uid;
@@ -132,6 +139,8 @@ export function canWrite(
       const renamed = !deepEqual(before.username, after.username);
       if (renamed) {
         if (validateUsername(after.username) !== null) return false;
+        // Stored exactly as validated: no padding, no invisible characters.
+        if (!/^[^\s\p{C}](?:.*[^\s\p{C}])?$/u.test(String(after.username))) return false;
         if (usernameTaken(db(), String(after.username), p[1])) return false;
       }
       if (fresh) return true;
@@ -164,21 +173,26 @@ export function canWrite(
     case "adminLog":
       return p.length === 2 && action === "create" && fresh && isNow(after?.at, ctx);
 
-    case "unique_users":
-      return p[1] === uid;
-
     // pushSubscriptions/{id} -> { uid, endpoint, p256dh, auth, updatedAt }
-    // A device is registered under its owner's uid and cannot be taken over.
+    // A device is registered under its owner's uid. Only that device itself —
+    // which alone knows the subscription's keys — can hand it to the next
+    // member who signs in on it.
     case "pushSubscriptions": {
       if (p.length !== 2) return false;
       if (action === "delete") return before?.uid === uid || fresh;
       const own =
         after?.uid === uid &&
         isString(after.endpoint, 1000, 1) &&
-        /^https:\/\//.test(after.endpoint) &&
+        /^https:\/\/[^\s/]+\.[^\s/]+\//.test(after.endpoint) &&
+        URL.canParse(after.endpoint) &&
         isString(after.p256dh, 300, 1) &&
         isString(after.auth, 300, 1);
-      return action === "create" ? own : before?.uid === uid && own;
+      const sameDevice =
+        !!before &&
+        before.endpoint === after?.endpoint &&
+        before.p256dh === after?.p256dh &&
+        before.auth === after?.auth;
+      return action === "create" ? own : (before?.uid === uid || sameDevice) && own;
     }
 
     // notifications/{uid} -> { seenAt }; items/{id} -> the in-app bell feed.
@@ -197,7 +211,7 @@ export function canWrite(
         );
       }
       if (p[1] === uid) return false;
-      if (!getDoc(`users/${p[1]}`)) return false;
+      if (!getDoc(`users/${p[1]}`) || blockedBetween(uid, p[1])) return false;
       if (!onlyKeys(after, ["type", "actorUid", "actorName", "postId", "text", "at"])) return false;
       if (after.actorUid !== uid || after.actorName !== ownUsername(ctx)) return false;
       if (!isString(after.postId, 120) || !isNow(after.at, ctx)) return false;
@@ -259,6 +273,7 @@ export function canWrite(
             uids[0] < uids[1] &&
             p[1] === `${uids[0]}_${uids[1]}` &&
             uids.every((u) => !!getDoc(`users/${u}`)) &&
+            !blockedBetween(String(uids[0]), String(uids[1])) &&
             after.clearedAt === undefined
           );
         }
@@ -266,6 +281,11 @@ export function canWrite(
         // your own clearedAt entry and no one else's.
         const was = (before?.clearedAt ?? {}) as Data;
         const is = (after.clearedAt ?? {}) as Data;
+        // Once either side has blocked the other, only housekeeping is left.
+        const quiet = changedKeys(before, after).every((k) => k === "clearedAt" || k === "seenAt");
+        if (!quiet && Array.isArray(uids) && blockedBetween(String(uids[0]), String(uids[1]))) {
+          return false;
+        }
         return (
           deepEqual(before?.uids, uids) &&
           changedKeys(was, is).every((k) => k === uid) &&
@@ -273,9 +293,12 @@ export function canWrite(
         );
       }
       if (p.length === 4 && p[2] === "messages") {
+        const thread = getDoc(`dms/${p[1]}`)?.data.uids;
         return (
           action === "create" &&
           !!after &&
+          Array.isArray(thread) &&
+          !blockedBetween(String(thread[0]), String(thread[1])) &&
           onlyKeys(after, ["from", "text", "at"]) &&
           after.from === uid &&
           isString(after.text, 1000, 1) &&
@@ -355,7 +378,9 @@ export function canWrite(
           return after.username === ownUsername(ctx);
         }
         // Owner: edit the caption.
-        if (mine && touchesOnly(before, after, ["caption"])) return isString(after.caption, 70);
+        if (mine && touchesOnly(before, after, ["caption"])) {
+          return notMuted(ctx) && isString(after.caption, 70);
+        }
         // Owner: soft delete. Recovery is an admin action.
         if (mine && touchesOnly(before, after, ["deleted", "deletedAt"])) {
           return after.deleted === true && isNow(after.deletedAt, ctx);
@@ -398,22 +423,6 @@ export function canWrite(
         after.uid === uid &&
         after.username === ownUsername(ctx) &&
         isString(after.text, 2000, 1) &&
-        isNow(after.at, ctx)
-      );
-    }
-
-    // claims/{id} -> a member's request to be credited for an unattributed
-    // post. Immutable once filed; approving or declining it is an admin action.
-    case "claims": {
-      if (p.length !== 2) return false;
-      if (action === "delete") return fresh;
-      return (
-        action === "create" &&
-        !!after &&
-        onlyKeys(after, ["postId", "uid", "username", "at"]) &&
-        after.uid === uid &&
-        after.username === ownUsername(ctx) &&
-        isString(after.postId, 120, 1) &&
         isNow(after.at, ctx)
       );
     }

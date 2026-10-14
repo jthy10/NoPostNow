@@ -169,6 +169,27 @@ ok("bell not readable by others", (await admin.store({ op: "query", spec: { pare
 ok("bell readable by owner", (await a.store({ op: "query", spec: { parent: `notifications/${aUid}/items`, orderBy: [["at", "desc"]], limit: 10 } })).json.docs.length === 1);
 ok("block", (await a.store({ op: "merge", path: `blocks/${aUid}`, data: { blocked: { __op: "arrayUnion", values: [bUid] } } })).status === 200);
 ok("block other's list", (await b.store({ op: "merge", path: `blocks/${aUid}`, data: { blocked: [] } })).status === 403);
+ok("blocked can't message", (await b.store({ op: "add", parent: `dms/${tid}/messages`, data: { from: bUid, text: "hello?", at: ST } })).status === 403);
+ok("blocked can't touch thread preview", (await b.store({ op: "merge", path: `dms/${tid}`, data: { lastText: "hello?", lastFrom: bUid, lastAt: ST } })).status === 403);
+ok("blocked can still mark seen", (await b.store({ op: "update", path: `dms/${tid}`, data: { [`seenAt.${bUid}`]: ST } })).status === 200);
+ok("blocked can't ring the bell", (await b.store({ op: "add", parent: `notifications/${aUid}/items`, data: { type: "like", actorUid: bUid, actorName: "Bob", postId, at: ST } })).status === 403);
+ok("message needs a thread", (await a.store({ op: "add", parent: `dms/${tid}_x/messages`, data: { from: aUid, text: "hi", at: ST } })).status === 403);
+
+// --- writes that try to slip past the rules
+r = await a.call("/api/store", { raw: `{"op":"add","parent":"notifications/${adminUid}/items","data":{"__proto__":{"type":"like","actorUid":"${aUid}","actorName":"Alice","postId":"${postId}","at":{"__op":"serverTimestamp"}}}}`, headers: { "content-type": "application/json" } });
+ok("prototype key refused", r.status === 400, r.status);
+ok("prototype dotted key refused", (await a.store({ op: "update", path: `users/${aUid}`, data: { "__proto__.muted": false } })).status === 400);
+ok("null body", (await a.call("/api/store", { raw: "null", headers: { "content-type": "application/json" } })).status === 400);
+ok("malformed query", (await a.store({ op: "query", spec: { parent: "photos", where: 5 } })).status === 400);
+ok("padded username", (await a.store({ op: "update", path: `users/${aUid}`, data: { username: "Alice   " } })).status === 403);
+
+// --- a shared device moves to whoever signs in on it, and only it can do so
+const device = { endpoint: "https://push.example.com/send/abc", p256dh: "key-1", auth: "secret-1" };
+ok("register device", (await a.store({ op: "set", path: "pushSubscriptions/dev1", data: { uid: aUid, ...device, updatedAt: ST } })).status === 200);
+ok("device can't be taken with other keys", (await b.store({ op: "set", path: "pushSubscriptions/dev1", data: { uid: bUid, ...device, auth: "guess", updatedAt: ST } })).status === 403);
+ok("same device changes hands", (await b.store({ op: "set", path: "pushSubscriptions/dev1", data: { uid: bUid, ...device, updatedAt: ST } })).status === 200);
+ok("previous member lost the device", (await a.store({ op: "delete", path: "pushSubscriptions/dev1" })).status === 403);
+ok("owner removes device", (await b.store({ op: "delete", path: "pushSubscriptions/dev1" })).status === 200);
 ok("prefs", (await a.store({ op: "set", path: `notifPrefs/${aUid}`, data: { uid: aUid, posts: true, comments: true, likes: false, dms: true, daily: true, quietStart: null, quietEnd: null, tz: "America/Chicago", updatedAt: ST } })).status === 200);
 ok("prefs private", (await b.store({ op: "get", path: `notifPrefs/${aUid}` })).status === 403);
 

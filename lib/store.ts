@@ -1,4 +1,4 @@
-import { apiPost, ApiError } from "./api";
+import { apiPost } from "./api";
 
 // Browser-side client for the document store served at /api/store.
 //
@@ -22,24 +22,12 @@ export class Timestamp {
     return new Timestamp(ms);
   }
 
-  static fromDate(date: Date) {
-    return new Timestamp(date.getTime());
-  }
-
-  static now() {
-    return new Timestamp(Date.now());
-  }
-
   toMillis() {
     return this.ms;
   }
 
   toDate() {
     return new Date(this.ms);
-  }
-
-  get seconds() {
-    return Math.floor(this.ms / 1000);
   }
 }
 
@@ -92,8 +80,7 @@ function collectionRef(path: string): CollectionReference {
 type Constraint =
   | { kind: "where"; field: string; op: string; value: unknown }
   | { kind: "orderBy"; field: string; direction: "asc" | "desc" }
-  | { kind: "limit"; count: number }
-  | { kind: "startAfter"; path: string };
+  | { kind: "limit"; count: number };
 
 export type Query = {
   kind: "query";
@@ -122,7 +109,7 @@ export function query(base: Queryable, ...constraints: Constraint[]): Query {
   return { ...base, constraints: [...base.constraints, ...constraints] };
 }
 
-export function where(field: string, op: "==" | "!=" | "array-contains" | "in" | "<" | "<=" | ">" | ">=", value: unknown): Constraint {
+export function where(field: string, op: "==" | "array-contains" | "<", value: unknown): Constraint {
   return { kind: "where", field, op, value };
 }
 
@@ -132,10 +119,6 @@ export function orderBy(field: string, direction: "asc" | "desc" = "asc"): Const
 
 export function limit(count: number): Constraint {
   return { kind: "limit", count };
-}
-
-export function startAfter(snapshot: { ref: DocumentReference }): Constraint {
-  return { kind: "startAfter", path: snapshot.ref.path };
 }
 
 // --- values that only the server can fill in --------------------------------
@@ -183,12 +166,9 @@ function decode(value: unknown): unknown {
 
 // --- snapshots --------------------------------------------------------------
 
-const METADATA = { hasPendingWrites: false, fromCache: false } as const;
-
 export class DocumentSnapshot {
   readonly ref: DocumentReference;
   readonly id: string;
-  readonly metadata = METADATA;
   private readonly value: DocumentData | null;
 
   constructor(ref: DocumentReference, value: DocumentData | null) {
@@ -211,22 +191,9 @@ export type QueryDocumentSnapshot<T = DocumentData> = DocumentSnapshot & { data(
 
 export class QuerySnapshot {
   readonly docs: QueryDocumentSnapshot[];
-  readonly metadata = METADATA;
 
   constructor(docs: QueryDocumentSnapshot[]) {
     this.docs = docs;
-  }
-
-  get size() {
-    return this.docs.length;
-  }
-
-  get empty() {
-    return this.docs.length === 0;
-  }
-
-  forEach(fn: (doc: QueryDocumentSnapshot) => void) {
-    this.docs.forEach(fn);
   }
 }
 
@@ -244,8 +211,7 @@ function toSpec(q: Queryable) {
   for (const c of base.constraints) {
     if (c.kind === "where") filters.push([c.field, c.op, encode(c.value)]);
     else if (c.kind === "orderBy") order.push([c.field, c.direction]);
-    else if (c.kind === "limit") spec.limit = c.count;
-    else spec.startAfter = c.path;
+    else spec.limit = c.count;
   }
   if (filters.length) spec.where = filters;
   if (order.length) spec.orderBy = order;
@@ -350,6 +316,15 @@ function openStream() {
     if (opened) refreshAll();
     opened = true;
   };
+  // The browser retries a dropped connection by itself, but gives up for good
+  // when a reconnect is answered with an error (a restart, a proxy hiccup).
+  stream.onerror = () => {
+    if (stream?.readyState !== EventSource.CLOSED) return;
+    closeStream();
+    setTimeout(() => {
+      if (listeners.size > 0) openStream();
+    }, 5000);
+  };
   document.addEventListener("visibilitychange", onVisible);
   // Belt and braces for networks that buffer event streams.
   fallbackTimer = setInterval(() => {
@@ -427,8 +402,4 @@ export function onSnapshot(
     listeners.delete(listener);
     if (listeners.size === 0) closeStream();
   };
-}
-
-export function isPermissionDenied(err: unknown): boolean {
-  return err instanceof ApiError && err.code === "permission-denied";
 }

@@ -8,7 +8,7 @@ import DmInstallPitch from "@/components/DmInstallPitch";
 import Inbox from "./Inbox";
 import MemberChat from "./MemberChat";
 
-// One URL, two screens. A member gets their own chat with the developers;
+// One URL, two screens. A member gets their own chat with the admins;
 // the admin gets the inbox of everyone's notes. Same address either way, so
 // a push notification about this chat lands correctly for both.
 export default function AdminChatPage() {

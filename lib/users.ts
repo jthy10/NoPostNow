@@ -22,9 +22,9 @@ let mapPromise: Promise<UserMeta[]> | null = null;
 function allUsers(): Promise<UserMeta[]> {
   mapPromise ??= getDocs(collection(db, "users")).then((snap) => {
     const list: UserMeta[] = [];
-    snap.forEach((d) => {
+    for (const d of snap.docs) {
       const { username, avatarPath, uid, joinedAt, appAt, lastPostAt } = d.data();
-      if (!username) return;
+      if (!username) continue;
       list.push({
         username,
         avatarPath: avatarPath ?? null,
@@ -33,8 +33,13 @@ function allUsers(): Promise<UserMeta[]> {
         appAt: appAt?.toDate?.() ?? null,
         lastActiveAt: lastPostAt?.toDate?.() ?? null,
       });
-    });
+    }
     return list;
+  });
+  // A failed read must not be remembered, or names and avatars would stay
+  // missing until the app is reopened.
+  mapPromise.catch(() => {
+    mapPromise = null;
   });
   return mapPromise;
 }
@@ -86,6 +91,9 @@ export function fetchMessageableUsers(): Promise<UserMeta[]> {
     );
     return users.map((u) => ({ ...u, uid: u.uid ?? resolved.get(u.username) ?? null }));
   })();
+  messageablePromise.catch(() => {
+    messageablePromise = null;
+  });
   return messageablePromise;
 }
 

@@ -45,9 +45,8 @@ export async function POST(request: Request) {
   if (!(await isSameOrigin(request))) return Response.json({ error: "cross-site" }, { status: 403 });
   if (!pushConfigured()) return Response.json({ sent: 0, stale: 0, skipped: "push not configured" });
 
-  const body = (await request.json().catch(() => ({}))) as {
+  const body = ((await request.json().catch(() => null)) ?? {}) as {
     type?: string;
-    caption?: string;
     text?: string;
     targetUid?: string;
     targetUids?: string[];
@@ -75,13 +74,14 @@ export async function POST(request: Request) {
     return Response.json({ sent: 0, stale: 0, skipped: "no targets" });
   }
 
-  const idOk = (s?: string) => (s && /^[A-Za-z0-9_-]{1,120}$/.test(s) ? s : null);
+  const idOk = (s?: unknown) => (typeof s === "string" && /^[A-Za-z0-9_-]{1,120}$/.test(s) ? s : null);
   const postId = idOk(body.postId);
   const threadId = idOk(body.threadId);
 
   // A "new post" ping reaches everyone, so it must be about a post the
   // sender really made.
-  if (type === "post" && (!postId || getDoc(`photos/${postId}`)?.data.userUUID !== actorUid)) {
+  const post = postId ? getDoc(`photos/${postId}`)?.data : undefined;
+  if (type === "post" && post?.userUUID !== actorUid) {
     return Response.json({ error: "not your post" }, { status: 403 });
   }
   // A DM ping must name a thread the sender is in, and only its members.
@@ -103,8 +103,10 @@ export async function POST(request: Request) {
     type === "adminReply"
       ? `${siteName} Admin`
       : (typeof profile?.username === "string" ? profile.username : "Someone").slice(0, 30);
-  const caption = (body.caption || "").trim().slice(0, 70);
-  const text = (body.text || "").trim().slice(0, 90);
+  // The caption is read from the post itself, so the ping cannot say
+  // something the post does not.
+  const caption = (typeof post?.caption === "string" ? post.caption : "").trim().slice(0, 70);
+  const text = (typeof body.text === "string" ? body.text : "").trim().slice(0, 90);
   const messages: Record<NotifyType, string> = {
     post: caption ? `${username} just posted — “${caption}”` : `${username} just posted`,
     comment: text ? `${username} commented: “${text}”` : `${username} commented on a post`,

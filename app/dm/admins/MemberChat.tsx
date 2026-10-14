@@ -34,10 +34,10 @@ export default function MemberChat({ uid }: { uid: string }) {
       backHref="/dm"
       avatar={<AdminChatAvatar className="h-8 w-8 text-[10px]" />}
       title={adminChatName()}
-      subtitle="Straight to the people building this"
+      subtitle="Straight to the people running this site"
       banner={
         <div className="mb-3 rounded-lg border-[0.5px] border-edge bg-card p-3.5">
-          <p className="text-[13px] font-bold">You&apos;re talking to the developers</p>
+          <p className="text-[13px] font-bold">You&apos;re talking to the admins</p>
           <p className="mt-0.5 text-[11px] leading-snug text-meta">{ADMIN_CHAT_BANNER}</p>
         </div>
       }
