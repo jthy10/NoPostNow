@@ -5,120 +5,90 @@
 
 A private photo feed for you and your friends, running on a computer you own.
 
-No algorithm, no ads, no strangers, and no cloud account to sign up for. One
-command sets it up; your photos stay in a folder you choose.
+No algorithm, no ads, no strangers, no cloud account. One command sets it up,
+and your photos stay in a folder you choose.
 
-## What you get
-
-- One shared, chronological feed: photos, captions, likes, comments, @mentions
-- Direct messages, a notification bell, and push notifications
-- Installs to a phone's Home Screen like an app (no app store)
-- Profiles with posting streaks and a likes podium
-- Blocking, data export, and account deletion for every member
-- An admin console: invites, moderation, announcements, stats, and a private
-  line between members and the admins
-- An optional "daily moment" — a reminder at a time you pick, with a badge for
-  photos posted on that exact minute
-- Your own name and accent colour
+- **Feed** — photos, captions, likes, comments, @mentions, in order
+- **Messages** — direct messages and push notifications
+- **Phone app** — installs to the Home Screen, no app store
+- **Admin console** — invites, moderation, announcements, stats
+- **Yours** — your own name and colour; members can export or delete their data
 
 ## Quick start
 
-You need a computer that stays on (a spare PC, a mini PC, a home server) with
-Linux, macOS or Windows. [Download the code](https://github.com/jthy10/nopostnow/archive/refs/heads/main.zip)
-or clone it, then run the launcher from that folder:
+You need a computer that stays on, running Linux, macOS or Windows.
 
-**Linux / macOS**
+1. [Download the zip](https://github.com/jthy10/nopostnow/archive/refs/heads/main.zip)
+   and unpack it, or `git clone https://github.com/jthy10/nopostnow.git`.
+2. Run the launcher from that folder:
 
-```bash
-sh nopostnow.sh
-```
+   | System | Command |
+   | --- | --- |
+   | Linux / macOS | `sh nopostnow.sh` |
+   | Windows | double-click `nopostnow.cmd` |
 
-**Windows** — double-click `nopostnow.cmd`, or in a terminal:
+3. Answer the questions in the control panel that opens: site name, where to
+   keep photos, and your admin account.
+4. Open the address it shows (by default <http://localhost:3000>) and sign in.
 
-```
-.\nopostnow.cmd
-```
+Node.js is downloaded into the folder if you don't have it. Nothing is
+installed system-wide.
 
-A control panel opens. The first time, it asks a few questions — the site's
-name and colour, where the photos are stored, the address and port, and your
-admin account — then starts the site. After that the panel shows your site's
-addresses on the left and its live console on the right, with **Options** for
-changing anything later, and buttons for invite and password-reset links.
+**No screen (SSH)?** The launcher uses a terminal wizard instead. Force it
+with `sh nopostnow.sh start`.
 
-If Node.js isn't installed, the launcher downloads an official copy into the
-folder for its own use. Nothing else is needed: the panel is a local page
-served by Node itself, reachable only from the same computer.
+## Invite your friends
 
-On a machine with no screen (a server you reach over SSH), the launcher uses
-a terminal wizard instead. You can also ask for that with `sh nopostnow.sh start`
-(on Windows, `.\nopostnow.cmd start`).
+Friends outside your home need a public `https://` address. Phones need one
+too, to install the app and get notifications.
 
-Already have Node.js 22.18 or newer? The same thing by hand:
+Follow **[docs/GOING-ONLINE.md](docs/GOING-ONLINE.md)**. The usual route is a
+domain (about $10 a year) plus a free Cloudflare Tunnel, with no router changes.
 
-```bash
-npm ci
-npm run panel        # or, in the terminal only: npm run setup && npm start
-```
-
-Then open the address it prints (by default <http://localhost:3000>).
-
-## Getting it online
-
-Out of the box the site is reachable from your own network. To let friends in
-from anywhere — and to let phones install it and receive notifications — it
-needs a public `https://` address. The usual way is to buy a domain (about $10
-a year) and connect it with a free Cloudflare Tunnel, which needs no router
-changes. **[docs/GOING-ONLINE.md](docs/GOING-ONLINE.md)** has step-by-step
-instructions.
-
-## Day to day
+## Commands
 
 | Task | Command |
 | --- | --- |
-| Start the site | `sh nopostnow.sh` (control panel) or `sh nopostnow.sh start` (terminal) |
-| Change the name, port, address, data folder… | **Options** in the panel, or `sh nopostnow.sh setup` |
+| Start with the control panel | `sh nopostnow.sh` |
+| Start in the terminal only | `sh nopostnow.sh start` |
+| Change settings | **Options** in the panel, or `sh nopostnow.sh setup` |
 | List accounts | `sh nopostnow.sh users list` |
-| Make an invite link | The panel, Admin → Members, or `sh nopostnow.sh users invite` |
-| Someone forgot their password | The panel, Admin → Members, or `sh nopostnow.sh users reset their@email` |
-| Locked out of the only admin account | `sh nopostnow.sh users reset your@email` |
+| Make an invite link | `sh nopostnow.sh users invite` |
+| Reset a password | `sh nopostnow.sh users reset their@email` |
+| Make someone an admin | `sh nopostnow.sh users admin their@email` |
+| Lock an account out | `sh nopostnow.sh users disable their@email` |
 
 On Windows, use `.\nopostnow.cmd` in place of `sh nopostnow.sh`.
 
-The site sends no email. Invites and password resets are links that you pass
-along yourself.
+Invite and reset links are also in the panel and under Admin → Members. The
+site sends no email, so you pass these links along yourself.
 
-### Backups
+## Backups and updates
 
-Everything — photos, accounts, settings — is in the data folder you chose
-during setup (`data/` by default). Copy that folder somewhere safe on a
-schedule. To move to a new machine, copy the folder across and point setup at
-it.
-
-### Updating
-
-Get the new code (`git pull`, or download and replace the files, keeping your
-data folder) and start it again. The launcher installs anything new, and the
-site rebuilds itself the first time changed code starts.
+- **Back up** the data folder (`data/` by default). It holds every photo,
+  account and setting.
+- **Move machines** by copying that folder across and pointing setup at it.
+- **Update** with `git pull` (or replace the files, keeping your data folder),
+  then start it again.
 
 ## How it works
 
-NoPostNow is a [Next.js](https://nextjs.org) app with its own small server
-side. There are no outside services:
+A [Next.js](https://nextjs.org) app with its own small server and no outside
+services. Everything lives in the data folder:
 
-- **Data** — one SQLite file (`nopostnow.db`), using the SQLite built into
-  Node.js. Nothing to install or administer.
-- **Photos** — plain files under `files/` in the data folder, served only to
-  signed-in members.
-- **Accounts** — email and password, stored as scrypt hashes, with cookie
-  sessions and optional authenticator-app two-factor sign-in.
-- **Access control** — every read and write is checked on the server by
-  [`server/rules.ts`](server/rules.ts).
-- **Settings** — `config.json` in the data folder, written by the control
-  panel or the setup wizard.
+| What | Where |
+| --- | --- |
+| Posts, accounts, messages | `nopostnow.db`, one SQLite file |
+| Photos | `files/`, served only to signed-in members |
+| Settings | `config.json` |
 
-See [SECURITY.md](SECURITY.md) for the security model and advice for hosts.
+Every read and write is checked on the server by
+[`server/rules.ts`](server/rules.ts). See [SECURITY.md](SECURITY.md) for the
+security model and advice for hosts.
 
 ## Development
+
+Needs Node.js 22.18 or newer.
 
 ```bash
 npm ci
@@ -127,11 +97,10 @@ npm run dev     # run with live reload
 npm run check   # lint, typecheck, tests, production build
 ```
 
-The project's website, <https://nopostnow.com>, is the static page in
-[`site/`](site/). `vercel.json` tells the host to publish that folder as-is;
-neither is used by a self-hosted site.
+[`site/`](site/) and `vercel.json` are the project website,
+<https://nopostnow.com>. A self-hosted site does not use them.
 
-Contributions are welcome — read [CONTRIBUTING.md](CONTRIBUTING.md) and the
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and the
 [Code of Conduct](CODE_OF_CONDUCT.md) first.
 
 ## License
