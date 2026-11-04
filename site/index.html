@@ -3,190 +3,143 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NoPostNow — a private photo feed you host yourself</title>
-<meta name="description" content="A private photo feed for you and your friends, running on a computer you own. No algorithm, no ads, no strangers, no cloud account. Free and open source.">
-<meta name="theme-color" content="#0a0a0a">
+<title>NoPostNow</title>
+<meta name="description" content="A private photo feed for you and your friends, running on a computer you own. Free and open source.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)">
 <link rel="canonical" href="https://nopostnow.com/">
 <link rel="icon" href="/icon-192.png" type="image/png">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="alternate" type="text/plain" href="/llms.txt" title="NoPostNow for agents">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://nopostnow.com/">
-<meta property="og:title" content="NoPostNow — a private photo feed you host yourself">
-<meta property="og:description" content="A private photo feed for you and your friends, running on a computer you own. Free and open source.">
+<meta property="og:title" content="NoPostNow">
+<meta property="og:description" content="A private photo feed for you and your friends, running on a computer you own.">
 <meta property="og:image" content="https://nopostnow.com/icon-512.png">
 <meta name="twitter:card" content="summary">
 <style>
   :root {
-    --canvas: #0a0a0a;
-    --panel: #0f0f0f;
-    --card: #111111;
-    --field: #1a1a1a;
-    --line: #1e1e1e;
-    --edge: #2a2a2a;
-    --body: #cccccc;
-    --meta: #8a8a8a;
-    --mut: #555555;
-    --heart: #ff3b5c;
-    --sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --bg: #ffffff;
+    --fg: #111111;
+    --dim: #6b6b6b;
+    --line: #ececec;
+    --well: #f6f6f6;
+    --btn: #111111;
+    --btn-fg: #ffffff;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0a0a0a;
+      --fg: #f2f2f2;
+      --dim: #8a8a8a;
+      --line: #1e1e1e;
+      --well: #141414;
+      --btn: #f2f2f2;
+      --btn-fg: #0a0a0a;
+    }
+  }
+
   * { box-sizing: border-box; }
-  html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
-  body {
-    margin: 0;
-    background: var(--canvas);
-    color: var(--body);
-    font: 16px/1.6 var(--sans);
-    -webkit-font-smoothing: antialiased;
-  }
-  a { color: #fff; text-underline-offset: 3px; text-decoration-color: var(--mut); }
-  a:hover { text-decoration-color: #fff; }
-  :focus-visible { outline: 2px solid #fff; outline-offset: 3px; border-radius: 4px; }
-  h1, h2, h3 { color: #fff; margin: 0; text-wrap: balance; }
-  p { margin: 0; }
-  code, pre { font-family: var(--mono); }
-  code { font-size: 0.9em; background: var(--field); border-radius: 4px; padding: 0.1em 0.35em; color: #fff; }
-  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 20px; }
+  html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+  a { color: inherit; text-underline-offset: 3px; text-decoration-color: var(--dim); }
+  a:hover { text-decoration-color: currentColor; }
+  :focus-visible { outline: 2px solid var(--fg); outline-offset: 3px; border-radius: 6px; }
+  h1, h2, p { margin: 0; }
+  h1, h2 { text-wrap: balance; letter-spacing: -0.03em; }
+  code { font: 0.92em var(--mono); }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 0 20px; }
 
-  /* top bar */
-  .bar { border-bottom: 1px solid var(--line); }
-  .bar .wrap { display: flex; align-items: center; justify-content: space-between; height: 56px; }
-  .brand { font-weight: 900; font-size: 20px; letter-spacing: -0.5px; color: #fff; text-decoration: none; }
-  .bar nav { display: flex; gap: 22px; font-size: 14px; font-weight: 600; }
-  .bar nav a { color: var(--meta); text-decoration: none; }
-  .bar nav a:hover { color: #fff; }
-  @media (max-width: 620px) { .bar nav a.opt { display: none; } }
+  header .wrap { display: flex; align-items: center; justify-content: space-between; height: 60px; }
+  .brand { font-weight: 800; letter-spacing: -0.03em; text-decoration: none; }
+  .icon { width: 20px; height: 20px; display: block; }
+  header a.icon-link { color: var(--dim); }
+  header a.icon-link:hover { color: var(--fg); }
 
-  /* hero */
-  .hero { padding: 72px 0 80px; background: radial-gradient(circle at 50% 0%, #1c1c1c 0%, var(--canvas) 62%); }
-  .hero .wrap { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 56px; align-items: center; }
-  .eyebrow { font-size: 12px; font-weight: 700; letter-spacing: 4px; text-transform: uppercase; color: var(--meta); }
-  h1 { font-size: clamp(38px, 6.2vw, 64px); font-weight: 900; line-height: 1.02; letter-spacing: -0.03em; margin: 18px 0 20px; }
-  .lede { font-size: 19px; max-width: 34em; }
-  .cta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 30px; }
-  .btn {
-    display: inline-flex; align-items: center; gap: 8px;
-    padding: 12px 20px; border-radius: 10px; font-weight: 800; font-size: 15px;
-    text-decoration: none; border: 1px solid var(--edge); color: #fff;
-  }
-  .btn:hover { border-color: var(--mut); }
-  .btn.primary { background: #fff; color: #000; border-color: #fff; }
-  .btn.primary:hover { background: #e6e6e6; border-color: #e6e6e6; }
-  .fine { margin-top: 16px; font-size: 13px; color: var(--meta); }
-  @media (max-width: 860px) {
-    .hero { padding: 48px 0 56px; }
-    .hero .wrap { grid-template-columns: 1fr; gap: 44px; }
-  }
+  .hero { padding: 72px 0 0; text-align: center; }
+  h1 { font-size: clamp(36px, 7vw, 60px); line-height: 1.04; font-weight: 800; }
+  .actions { display: flex; justify-content: center; gap: 10px; margin-top: 32px; }
+  .btn { display: inline-flex; align-items: center; height: 42px; padding: 0 18px; border-radius: 999px; font-weight: 600; font-size: 15px; text-decoration: none; border: 1px solid var(--line); }
+  .btn:hover { border-color: var(--dim); }
+  .btn.primary { background: var(--btn); color: var(--btn-fg); border-color: var(--btn); }
+  .btn.primary:hover { opacity: 0.85; }
 
-  /* phone illustration */
-  .phone {
-    width: 100%; max-width: 300px; margin: 0 auto;
-    border: 1px solid var(--edge); border-radius: 34px; padding: 8px; background: #050505;
-  }
-  .screen { border-radius: 27px; overflow: hidden; background: var(--canvas); }
-  .p-top { display: flex; align-items: center; justify-content: space-between; height: 46px; padding: 0 16px; border-bottom: 1px solid var(--line); }
-  .p-top b { color: #fff; font-weight: 900; font-size: 17px; letter-spacing: -0.5px; }
-  .p-top svg, .p-row svg, .p-nav svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-  .p-top span { display: flex; gap: 12px; color: #fff; }
-  .p-post { padding: 9px 9px 4px; border-bottom: 1px solid var(--field); }
-  .p-photo { border-radius: 8px; aspect-ratio: 4 / 3; }
-  .p-photo.a { background: linear-gradient(160deg, #2b3a55 0%, #7a5c6e 45%, #f0a56b 100%); }
-  .p-photo.b { background: linear-gradient(200deg, #1f3d33 0%, #3f6b52 55%, #c9d28a 100%); aspect-ratio: 16 / 9; }
-  .p-who { display: flex; align-items: center; gap: 7px; padding: 9px 3px 2px; font-size: 12px; font-weight: 700; color: #fff; }
-  .p-who i { width: 22px; height: 22px; border-radius: 50%; background: var(--field); border: 1px solid var(--edge); }
-  .p-who time { margin-left: auto; font-weight: 500; font-size: 10px; color: var(--meta); }
-  .p-cap { padding: 0 3px; font-size: 12.5px; }
-  .p-row { display: flex; align-items: center; gap: 5px; padding: 6px 3px 8px; font-size: 12px; font-weight: 700; color: var(--mut); }
-  .p-row .on { color: var(--heart); display: flex; align-items: center; gap: 5px; margin-right: 10px; }
-  .p-row .on svg { fill: var(--heart); stroke: var(--heart); }
-  .p-nav { display: flex; justify-content: space-around; align-items: center; height: 46px; background: var(--panel); border-top: 1px solid var(--line); color: var(--mut); }
-  .p-nav .post { width: 30px; height: 30px; border-radius: 50%; background: #fff; color: #000; display: grid; place-items: center; }
-  .p-nav .here { color: #fff; }
+  /* The app is always dark, so the phone is too. */
+  .phone { width: 280px; margin: 56px auto 0; border: 1px solid #2a2a2a; border-radius: 36px; padding: 8px; background: #050505; color: #cccccc; text-align: left; box-shadow: 0 30px 80px -30px rgb(0 0 0 / 0.45); }
+  .screen { border-radius: 28px; overflow: hidden; background: #0a0a0a; }
+  .screen svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .s-top { display: flex; align-items: center; justify-content: space-between; height: 44px; padding: 0 16px; border-bottom: 1px solid #1e1e1e; color: #fff; }
+  .s-top b { font-weight: 800; font-size: 16px; letter-spacing: -0.03em; }
+  .s-top span { display: flex; gap: 12px; }
+  .post { padding: 8px 8px 2px; }
+  .photo { border-radius: 8px; aspect-ratio: 4 / 3; background: linear-gradient(160deg, #2b3a55, #7a5c6e 45%, #f0a56b); }
+  .photo.b { aspect-ratio: 16 / 9; background: linear-gradient(200deg, #1f3d33, #3f6b52 55%, #c9d28a); }
+  .who { display: flex; align-items: center; gap: 7px; padding: 8px 2px 2px; font-size: 12px; font-weight: 700; color: #fff; }
+  .who i { width: 20px; height: 20px; border-radius: 50%; background: #1a1a1a; border: 1px solid #2a2a2a; }
+  .who time { margin-left: auto; font-weight: 500; font-size: 10px; color: #8a8a8a; }
+  .cap { padding: 0 2px; font-size: 12px; }
+  .row { display: flex; align-items: center; gap: 5px; padding: 6px 2px 8px; font-size: 12px; font-weight: 700; color: #8c8c8c; }
+  .row .on { display: flex; align-items: center; gap: 5px; margin-right: 10px; color: #ff3b5c; }
+  .row .on svg { fill: currentColor; }
+  .s-nav { display: flex; justify-content: space-around; align-items: center; height: 46px; background: #0f0f0f; border-top: 1px solid #1e1e1e; color: #8c8c8c; }
+  .s-nav .here { color: #fff; }
+  .s-nav .add { width: 30px; height: 30px; border-radius: 50%; background: #fff; color: #000; display: grid; place-items: center; }
 
-  /* sections */
-  section { padding: 72px 0; border-top: 1px solid var(--line); }
-  h2 { font-size: clamp(26px, 3.6vw, 36px); font-weight: 900; letter-spacing: -0.02em; line-height: 1.1; }
-  .sub { margin-top: 12px; max-width: 42em; font-size: 17px; }
-  @media (max-width: 620px) { section { padding: 52px 0; } }
+  section { padding: 96px 0 0; }
+  h2 { font-size: 26px; font-weight: 750; margin-bottom: 28px; }
+  section + footer { margin-top: 96px; }
 
-  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin-top: 36px; background: var(--line); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
-  .grid > div { background: var(--canvas); padding: 22px; }
-  .grid h3 { font-size: 15px; font-weight: 800; margin-bottom: 6px; }
-  .grid p { font-size: 14.5px; line-height: 1.5; color: var(--meta); }
-  @media (max-width: 860px) { .grid { grid-template-columns: repeat(2, 1fr); } }
-  @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+  /* Operating-system switch: radios plus :has(), so it works without script. */
+  .os { display: inline-flex; padding: 3px; border-radius: 999px; background: var(--well); margin-bottom: 24px; border: 0; }
+  .os input { position: absolute; opacity: 0; pointer-events: none; }
+  .os label { padding: 5px 14px; border-radius: 999px; font-size: 14px; font-weight: 600; color: var(--dim); cursor: pointer; }
+  .os input:checked + label { background: var(--bg); color: var(--fg); box-shadow: 0 1px 2px rgb(0 0 0 / 0.12); }
+  .os input:focus-visible + label { outline: 2px solid var(--fg); outline-offset: 1px; }
+  .win { display: none; }
+  body:has(#os-win:checked) .win { display: inline; }
+  body:has(#os-win:checked) .nix { display: none; }
 
-  /* steps */
-  .steps { list-style: none; margin: 40px 0 0; padding: 0; counter-reset: step; display: grid; gap: 34px; }
-  .steps > li { counter-increment: step; display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 18px; }
-  .steps > li::before {
-    content: counter(step); width: 36px; height: 36px; border-radius: 50%;
-    border: 1px solid var(--edge); display: grid; place-items: center;
-    font-weight: 800; font-size: 15px; color: #fff;
-  }
-  .steps h3 { font-size: 19px; font-weight: 800; margin: 4px 0 8px; }
-  .steps p { max-width: 44em; }
-  .steps p + p { margin-top: 10px; }
-  .steps ul { margin: 10px 0 0; padding-left: 20px; max-width: 44em; }
-  .steps li li { margin: 4px 0; }
+  ol { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+  ol > li { counter-increment: step; display: grid; grid-template-columns: 28px minmax(0, 1fr); column-gap: 12px; padding: 18px 0; border-top: 1px solid var(--line); }
+  ol > li::before { content: counter(step); color: var(--dim); font-variant-numeric: tabular-nums; }
+  ol > li > :not(pre) { grid-column: 2; }
+  ol pre { grid-column: 2; margin-top: 10px; }
+
+  pre { position: relative; margin: 0; padding: 11px 44px 11px 14px; background: var(--well); border-radius: 10px; font: 14px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .copy { position: absolute; top: 6px; right: 6px; width: 30px; height: 30px; display: grid; place-items: center; border: 0; border-radius: 7px; background: none; color: var(--dim); cursor: pointer; }
+  .copy:hover { color: var(--fg); background: var(--line); }
+  .copy svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  th, td { text-align: left; font-weight: 400; padding: 12px 0; border-top: 1px solid var(--line); vertical-align: top; }
+  th { width: 44%; padding-right: 16px; }
+  td code { overflow-wrap: anywhere; }
+  td { color: var(--dim); }
+  td code, td b { color: var(--fg); font-weight: 500; }
   @media (max-width: 560px) {
-    .steps > li { grid-template-columns: 1fr; gap: 10px; }
+    th, td { display: block; width: auto; }
+    th { padding-bottom: 2px; }
+    td { border-top: 0; padding-top: 0; }
   }
 
-  .os { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; max-width: 720px; }
-  @media (max-width: 620px) { .os { grid-template-columns: 1fr; } }
-  .os h4 { margin: 0 0 6px; font-size: 12px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--meta); font-weight: 700; }
-  .cmd {
-    position: relative; margin: 0; background: var(--card); border: 1px solid var(--edge);
-    border-radius: 10px; padding: 13px 76px 13px 14px; font-size: 14px; line-height: 1.5; color: #fff;
-    white-space: pre-wrap; overflow-wrap: anywhere;
-  }
-  .cmd button {
-    position: absolute; top: 8px; right: 8px; font: 700 11px var(--sans); letter-spacing: 1px; text-transform: uppercase;
-    background: var(--field); color: var(--meta); border: 1px solid var(--edge); border-radius: 6px; padding: 5px 9px; cursor: pointer;
-  }
-  .cmd button:hover { color: #fff; border-color: var(--mut); }
-  .block { margin-top: 14px; max-width: 720px; }
-
-  .note { margin-top: 36px; border: 1px solid var(--edge); border-radius: 14px; padding: 20px 22px; background: var(--card); max-width: 760px; }
-  .note h3 { font-size: 15px; font-weight: 800; margin-bottom: 6px; }
-  .note p { font-size: 15px; }
-
-  table { width: 100%; max-width: 860px; border-collapse: collapse; margin-top: 30px; font-size: 15px; }
-  th, td { text-align: left; padding: 13px 14px 13px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { width: 38%; color: #fff; font-weight: 700; }
-  @media (max-width: 560px) {
-    th, td { display: block; width: auto; padding-right: 0; }
-    th { border-bottom: 0; padding-bottom: 2px; }
-    td { padding-top: 0; }
-  }
-
-  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; margin-top: 34px; }
-  .two h3 { font-size: 17px; font-weight: 800; margin-bottom: 8px; }
-  .two ul { margin: 0; padding-left: 20px; }
-  .two li { margin: 7px 0; }
-  .two b { color: #fff; }
-  @media (max-width: 760px) { .two { grid-template-columns: 1fr; gap: 30px; } }
-
-  footer { border-top: 1px solid var(--line); padding: 34px 0 48px; font-size: 14px; color: var(--meta); }
-  footer .wrap { display: flex; flex-wrap: wrap; gap: 10px 24px; justify-content: space-between; }
-  footer a { color: var(--meta); }
-  footer a:hover { color: #fff; }
-  footer span { display: flex; flex-wrap: wrap; gap: 6px 20px; }
+  footer { border-top: 1px solid var(--line); padding: 28px 0 48px; font-size: 14px; color: var(--dim); }
+  footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+  footer a { text-decoration: none; }
+  footer a:hover { color: var(--fg); }
+  footer a:first-child { margin-right: auto; }
 </style>
 </head>
 <body>
 
-<header class="bar">
+<header>
   <div class="wrap">
     <a class="brand" href="/">NoPostNow</a>
-    <nav aria-label="Sections">
-      <a class="opt" href="#features">Features</a>
-      <a href="#setup">Set up</a>
-      <a class="opt" href="#online">Going online</a>
-      <a class="opt" href="#how">How it works</a>
-      <a href="https://github.com/jthy10/nopostnow">GitHub</a>
-    </nav>
+    <a class="icon-link" href="https://github.com/jthy10/nopostnow" aria-label="GitHub">
+      <svg class="icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.52-1.33-1.28-1.69-1.28-1.69-1.05-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.69 5.39-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z"/></svg>
+    </a>
   </div>
 </header>
 
@@ -194,43 +147,37 @@
 
 <div class="hero">
   <div class="wrap">
-    <div>
-      <p class="eyebrow">Free &middot; Open source &middot; Self-hosted</p>
-      <h1>A private photo feed for your friends, on a computer you own.</h1>
-      <p class="lede">No algorithm, no ads, no strangers, and no cloud account to sign up for. One command sets it up, and your photos stay in a folder you choose.</p>
-      <div class="cta">
-        <a class="btn primary" href="https://github.com/jthy10/nopostnow/archive/refs/heads/main.zip">Download</a>
-        <a class="btn" href="#setup">How to set it up</a>
-        <a class="btn" href="https://github.com/jthy10/nopostnow">View on GitHub</a>
-      </div>
-      <p class="fine">Runs on Linux, macOS and Windows. MIT licensed.</p>
+    <h1>A private photo feed you host yourself.</h1>
+    <div class="actions">
+      <a class="btn primary" href="https://github.com/jthy10/nopostnow/archive/refs/heads/main.zip">Download</a>
+      <a class="btn" href="#setup">Set up</a>
     </div>
 
-    <div class="phone" role="img" aria-label="Illustration of the feed on a phone: a photo, who posted it, a caption, likes and comments.">
+    <div class="phone" role="img" aria-label="The feed on a phone: two photos from friends, with a caption, likes and comments.">
       <div class="screen" aria-hidden="true">
-        <div class="p-top">
+        <div class="s-top">
           <b>NoPostNow</b>
           <span>
             <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
             <svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg>
           </span>
         </div>
-        <div class="p-post">
-          <div class="p-photo a"></div>
-          <div class="p-who"><i></i>sam<time>Today 6:42 PM</time></div>
-          <p class="p-cap">made it to the top before sunset</p>
-          <div class="p-row">
+        <div class="post">
+          <div class="photo"></div>
+          <div class="who"><i></i>sam<time>6:42 PM</time></div>
+          <p class="cap">made it to the top before sunset</p>
+          <div class="row">
             <span class="on"><svg viewBox="0 0 24 24"><path d="M12 21l-1.4-1.3C5.4 15 2 12 2 8.5A5.5 5.5 0 0112 5a5.5 5.5 0 0110 3.5c0 3.5-3.4 6.5-8.6 11.2z"/></svg>4</span>
             <svg viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 01-12.6 7.3L3 20l1.3-5.2A8.4 8.4 0 1121 11.5z"/></svg>2
           </div>
         </div>
-        <div class="p-post">
-          <div class="p-photo b"></div>
-          <div class="p-who"><i></i>riley<time>Today 1:15 PM</time></div>
+        <div class="post">
+          <div class="photo b"></div>
+          <div class="who"><i></i>riley<time>1:15 PM</time></div>
         </div>
-        <div class="p-nav">
+        <div class="s-nav">
           <svg class="here" viewBox="0 0 24 24"><path d="M3 11l9-8 9 8v9a1 1 0 01-1 1h-5v-6H9v6H4a1 1 0 01-1-1z"/></svg>
-          <span class="post"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>
+          <span class="add"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>
           <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0116 0"/></svg>
         </div>
       </div>
@@ -238,150 +185,60 @@
   </div>
 </div>
 
-<section id="features">
-  <div class="wrap">
-    <h2>What you get</h2>
-    <p class="sub">Everything a small group needs to share photos with each other, and nothing built to keep you scrolling.</p>
-    <div class="grid">
-      <div><h3>One shared feed</h3><p>Photos in the order they were posted, with captions, likes, comments and @mentions.</p></div>
-      <div><h3>Messages and notifications</h3><p>Direct messages, a notification bell, and push notifications to phones.</p></div>
-      <div><h3>Installs like an app</h3><p>Members add it to their phone's Home Screen. No app store involved.</p></div>
-      <div><h3>Profiles</h3><p>Each member gets a profile with their posts, a posting streak and a likes podium.</p></div>
-      <div><h3>Members stay in control</h3><p>Blocking, a full data export, and account deletion for everyone.</p></div>
-      <div><h3>Admin console</h3><p>Invites, moderation, announcements, stats, and a private line between members and the admins.</p></div>
-      <div><h3>Daily moment</h3><p>Optional: a reminder at a time you pick, with a badge for photos posted on that exact minute.</p></div>
-      <div><h3>Make it yours</h3><p>Give your site its own name and accent colour.</p></div>
-      <div><h3>Nothing leaves your machine</h3><p>No outside services, no analytics, and the site sends no email.</p></div>
-    </div>
-  </div>
-</section>
-
 <section id="setup">
   <div class="wrap">
-    <h2>Set it up</h2>
-    <p class="sub">You need a computer that stays on &mdash; a spare PC, a mini PC or a home server &mdash; running Linux, macOS or Windows. That's all.</p>
+    <h2>Set up</h2>
 
-    <ol class="steps">
+    <fieldset class="os">
+      <legend hidden>Operating system</legend>
+      <input type="radio" name="os" id="os-nix" checked><label for="os-nix">macOS &amp; Linux</label>
+      <input type="radio" name="os" id="os-win"><label for="os-win">Windows</label>
+    </fieldset>
+
+    <ol>
       <li>
-        <div>
-          <h3>Get the code</h3>
-          <p><a href="https://github.com/jthy10/nopostnow/archive/refs/heads/main.zip">Download the zip</a> and unpack it, or clone the repository:</p>
-          <div class="block"><pre class="cmd">git clone https://github.com/jthy10/nopostnow.git</pre></div>
-        </div>
+        <p><a href="https://github.com/jthy10/nopostnow/archive/refs/heads/main.zip">Download</a> and unzip, or clone.</p>
+        <pre>git clone https://github.com/jthy10/nopostnow.git</pre>
       </li>
       <li>
-        <div>
-          <h3>Run the launcher</h3>
-          <p>From inside that folder:</p>
-          <div class="os">
-            <div><h4>Linux / macOS</h4><pre class="cmd">sh nopostnow.sh</pre></div>
-            <div><h4>Windows</h4><pre class="cmd">.\nopostnow.cmd</pre></div>
-          </div>
-          <p style="margin-top:14px">On Windows you can also just double-click <code>nopostnow.cmd</code>. If Node.js isn't installed, the launcher downloads an official copy into the folder for its own use. Nothing else is needed.</p>
-        </div>
+        <p>Run the launcher in that folder.</p>
+        <pre><span class="nix">sh nopostnow.sh</span><span class="win">.\nopostnow.cmd</span></pre>
       </li>
       <li>
-        <div>
-          <h3>Answer a few questions</h3>
-          <p>A control panel opens in your browser. The first time, it asks for:</p>
-          <ul>
-            <li>the site's name and colour</li>
-            <li>where the photos are stored</li>
-            <li>the address and port</li>
-            <li>your admin account</li>
-          </ul>
-          <p>Then it starts the site. Open the address it shows &mdash; by default <code>http://localhost:3000</code> &mdash; and sign in.</p>
-          <p>From then on the panel shows your site's addresses and its live console, with <b>Options</b> for changing anything later and buttons for invite and password-reset links.</p>
-        </div>
+        <p>Answer the questions in the panel that opens, then sign in at <code>localhost:3000</code>.</p>
       </li>
       <li>
-        <div>
-          <h3>Invite your friends</h3>
-          <p>Once the site has a public address (<a href="#online">see below</a>), create an invite link in the panel or under <b>Admin &rarr; Members</b> and send it to a friend. They open it, create an account, and add the site to their Home Screen.</p>
-        </div>
+        <p>Put it online with a domain and a Cloudflare Tunnel, then send invite links. <a href="https://github.com/jthy10/nopostnow/blob/main/docs/GOING-ONLINE.md">Guide</a></p>
       </li>
     </ol>
-
-    <div class="note">
-      <h3>No screen? Prefer the terminal?</h3>
-      <p>On a machine you reach over SSH, the launcher uses a terminal wizard instead of the panel. You can ask for it with <code>sh nopostnow.sh start</code>. If you already have Node.js 22.18 or newer, <code>npm ci</code> followed by <code>npm run panel</code> does the same thing by hand.</p>
-    </div>
   </div>
 </section>
 
-<section id="online">
+<section id="commands">
   <div class="wrap">
-    <h2>Getting it online</h2>
-    <p class="sub">Out of the box the site is reachable from your own network. To let friends in from anywhere &mdash; and to let phones install it and receive notifications &mdash; it needs a public <code>https://</code> address.</p>
-
-    <ol class="steps">
-      <li>
-        <div>
-          <h3>Get a domain</h3>
-          <p>About $10 a year from any registrar, or directly from Cloudflare. If you bought it elsewhere, add it to a free Cloudflare account.</p>
-        </div>
-      </li>
-      <li>
-        <div>
-          <h3>Create a Cloudflare Tunnel</h3>
-          <p>The tunnel is free. It connects out from your computer, so you don't open ports on your router and your home IP address is never published. Cloudflare's dashboard gives you one command to run on the computer hosting the site.</p>
-        </div>
-      </li>
-      <li>
-        <div>
-          <h3>Point your address at the site</h3>
-          <p>In the tunnel's settings, add a public hostname such as <code>photos.example.com</code> that sends traffic to <code>localhost:3000</code>. Then enter that address in the panel under <b>Options &rarr; Getting online</b> so invite links use it.</p>
-        </div>
-      </li>
-    </ol>
-
-    <div class="note">
-      <h3>The full guide</h3>
-      <p><a href="https://github.com/jthy10/nopostnow/blob/main/docs/GOING-ONLINE.md">GOING-ONLINE.md</a> has every step, plus the alternatives: a one-command temporary address for a first look, your own reverse proxy, a friends-only private network with Tailscale, and how to start the site with the computer.</p>
-    </div>
-  </div>
-</section>
-
-<section id="running">
-  <div class="wrap">
-    <h2>Day to day</h2>
+    <h2>Commands</h2>
     <table>
-      <tr><th scope="row">Start the site</th><td><code>sh nopostnow.sh</code> for the control panel, or <code>sh nopostnow.sh start</code> for the terminal</td></tr>
-      <tr><th scope="row">Change the name, port, address or data folder</th><td><b>Options</b> in the panel, or <code>sh nopostnow.sh setup</code></td></tr>
-      <tr><th scope="row">Make an invite link</th><td>The panel, <b>Admin &rarr; Members</b>, or <code>npm run users -- invite</code></td></tr>
-      <tr><th scope="row">Someone forgot their password</th><td>The panel, <b>Admin &rarr; Members</b>, or <code>npm run users -- reset their@email</code></td></tr>
-      <tr><th scope="row">Back up</th><td>Everything &mdash; photos, accounts, settings &mdash; is in the data folder you chose during setup (<code>data/</code> by default). Copy that folder somewhere safe on a schedule.</td></tr>
-      <tr><th scope="row">Move to a new machine</th><td>Copy the data folder across and point setup at it.</td></tr>
-      <tr><th scope="row">Update</th><td>Get the new code (<code>git pull</code>, or download and replace the files, keeping your data folder), run <code>npm ci</code>, and start it again.</td></tr>
+      <tr><th scope="row">Start</th><td><code><span class="nix">sh nopostnow.sh</span><span class="win">.\nopostnow.cmd</span></code></td></tr>
+      <tr><th scope="row">Start without the panel</th><td><code><span class="nix">sh nopostnow.sh</span><span class="win">.\nopostnow.cmd</span> start</code></td></tr>
+      <tr><th scope="row">Change settings</th><td><code><span class="nix">sh nopostnow.sh</span><span class="win">.\nopostnow.cmd</span> setup</code></td></tr>
+      <tr><th scope="row">Make an invite link</th><td><code><span class="nix">sh nopostnow.sh</span><span class="win">.\nopostnow.cmd</span> users invite</code></td></tr>
+      <tr><th scope="row">Reset a password</th><td><code><span class="nix">sh nopostnow.sh</span><span class="win">.\nopostnow.cmd</span> users reset their@email</code></td></tr>
+      <tr><th scope="row">Make someone an admin</th><td><code><span class="nix">sh nopostnow.sh</span><span class="win">.\nopostnow.cmd</span> users admin their@email</code></td></tr>
+      <tr><th scope="row">Update</th><td><code>git pull</code>, then start again</td></tr>
     </table>
   </div>
 </section>
 
-<section id="how">
+<section id="data">
   <div class="wrap">
-    <h2>How it works</h2>
-    <p class="sub">NoPostNow is a Next.js app with its own small server side. There are no outside services to sign up for or keep running.</p>
-    <div class="two">
-      <div>
-        <h3>What's inside</h3>
-        <ul>
-          <li><b>Data</b> &mdash; one SQLite file, using the SQLite built into Node.js. Nothing to install or administer.</li>
-          <li><b>Photos</b> &mdash; plain files in the data folder, served only to signed-in members.</li>
-          <li><b>Accounts</b> &mdash; email and password, with optional authenticator-app two-factor sign-in.</li>
-          <li><b>Settings</b> &mdash; one <code>config.json</code>, written by the control panel or the setup wizard.</li>
-        </ul>
-      </div>
-      <div>
-        <h3>How it protects your site</h3>
-        <ul>
-          <li>Passwords are stored as salted scrypt hashes; sessions live in an HttpOnly cookie.</li>
-          <li>Every read and write is authorized on the server. Anything not explicitly allowed is refused.</li>
-          <li>Photos have no public URL, and uploads are verified to be images by their content.</li>
-          <li>Admin changes need the password re-entered recently, plus an authenticator code when two-factor is on.</li>
-        </ul>
-        <p style="margin-top:12px">More in <a href="https://github.com/jthy10/nopostnow/blob/main/SECURITY.md">SECURITY.md</a>, including advice for hosts.</p>
-      </div>
-    </div>
+    <h2>Your data</h2>
+    <table>
+      <tr><th scope="row">Posts, accounts, messages</th><td><code>data/nopostnow.db</code></td></tr>
+      <tr><th scope="row">Photos</th><td><code>data/files/</code></td></tr>
+      <tr><th scope="row">Settings</th><td><code>data/config.json</code></td></tr>
+      <tr><th scope="row">Back up or move</th><td>Copy <code>data/</code></td></tr>
+      <tr><th scope="row">Security</th><td><a href="https://github.com/jthy10/nopostnow/blob/main/SECURITY.md">SECURITY.md</a></td></tr>
+    </table>
   </div>
 </section>
 
@@ -389,32 +246,43 @@
 
 <footer>
   <div class="wrap">
-    <span>NoPostNow is free software under the <a href="https://github.com/jthy10/nopostnow/blob/main/LICENSE">MIT license</a>.</span>
-    <span>
-      <a href="https://github.com/jthy10/nopostnow">Source</a>
-      <a href="https://github.com/jthy10/nopostnow/issues">Issues</a>
-      <a href="https://github.com/jthy10/nopostnow/blob/main/CONTRIBUTING.md">Contributing</a>
-      <a href="https://github.com/jthy10/nopostnow/releases">Releases</a>
-    </span>
+    <a href="https://github.com/jthy10/nopostnow/blob/main/LICENSE">MIT</a>
+    <a href="https://github.com/jthy10/nopostnow">Source</a>
+    <a href="https://github.com/jthy10/nopostnow/releases">Releases</a>
+    <a href="https://github.com/jthy10/nopostnow/issues">Issues</a>
   </div>
 </footer>
 
 <script>
-  // Add a copy button to each command block.
+  // Default the switch to the visitor's system and remember their choice.
+  const win = document.getElementById("os-win");
+  let saved = null;
+  try { saved = localStorage.getItem("os"); } catch {}
+  const platform = navigator.userAgentData?.platform || navigator.platform || "";
+  win.checked = saved ? saved === "win" : /win/i.test(platform);
+  if (!win.checked) document.getElementById("os-nix").checked = true;
+  for (const input of document.querySelectorAll(".os input")) {
+    input.addEventListener("change", () => {
+      try { localStorage.setItem("os", win.checked ? "win" : "nix"); } catch {}
+    });
+  }
+
+  // Copy buttons copy what is shown, so they follow the switch.
   if (navigator.clipboard) {
-    for (const pre of document.querySelectorAll("pre.cmd")) {
-      const text = pre.textContent;
+    const icon = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>';
+    const done = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg>';
+    for (const pre of document.querySelectorAll("pre")) {
       const button = document.createElement("button");
       button.type = "button";
-      button.textContent = "Copy";
+      button.className = "copy";
+      button.setAttribute("aria-label", "Copy");
+      button.innerHTML = icon;
       button.addEventListener("click", async () => {
         try {
-          await navigator.clipboard.writeText(text);
-          button.textContent = "Copied";
-        } catch {
-          button.textContent = "Failed";
-        }
-        setTimeout(() => (button.textContent = "Copy"), 1600);
+          await navigator.clipboard.writeText(pre.innerText.trim());
+          button.innerHTML = done;
+          setTimeout(() => (button.innerHTML = icon), 1400);
+        } catch {}
       });
       pre.append(button);
     }
