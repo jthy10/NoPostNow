@@ -1,0 +1,34 @@
+# NoPostNow
+
+> A private photo feed for you and your friends, running on a computer you own. Next.js, one SQLite file, no outside services. MIT licensed.
+
+## Set up
+
+1. `git clone https://github.com/jthy10/nopostnow.git` (or download https://github.com/jthy10/nopostnow/archive/refs/heads/main.zip)
+2. In that folder: `sh nopostnow.sh` (Windows: `.\nopostnow.cmd`). It fetches Node.js if missing.
+3. Answer the setup questions, then sign in at http://localhost:3000.
+4. To invite friends, give it a public https address: https://github.com/jthy10/nopostnow/blob/main/docs/GOING-ONLINE.md
+
+## Commands
+
+On Windows, use `.\nopostnow.cmd` in place of `sh nopostnow.sh`.
+
+- Start: `sh nopostnow.sh`
+- Start without the panel: `sh nopostnow.sh start`
+- Change settings: `sh nopostnow.sh setup`
+- List accounts: `sh nopostnow.sh users list`
+- Make an invite link: `sh nopostnow.sh users invite`
+- Reset a password: `sh nopostnow.sh users reset their@email`
+- Make someone an admin: `sh nopostnow.sh users admin their@email`
+- Update: `git pull`, then start again
+
+## Data
+
+Everything is in the data folder (`data/` by default): `nopostnow.db` (posts, accounts, messages), `files/` (photos), `config.json` (settings). Back up or move by copying that folder.
+
+## Docs
+
+- [README](https://github.com/jthy10/nopostnow/blob/main/README.md)
+- [Going online](https://github.com/jthy10/nopostnow/blob/main/docs/GOING-ONLINE.md)
+- [Security](https://github.com/jthy10/nopostnow/blob/main/SECURITY.md)
+- [Contributing](https://github.com/jthy10/nopostnow/blob/main/CONTRIBUTING.md)
