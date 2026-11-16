@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NoPostNow</title>
-<meta name="description" content="A private photo feed for you and your friends, running on a computer you own. Free and open source.">
+<meta name="description" content="An open-source, self-hosted photo feed for private circles: social media for you and your friends, running on a computer you own.">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)">
@@ -14,10 +14,14 @@
 <link rel="alternate" type="text/plain" href="/llms.txt" title="NoPostNow for agents">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://nopostnow.com/">
-<meta property="og:title" content="NoPostNow">
-<meta property="og:description" content="A private photo feed for you and your friends, running on a computer you own.">
-<meta property="og:image" content="https://nopostnow.com/icon-512.png">
-<meta name="twitter:card" content="summary">
+<meta property="og:site_name" content="NoPostNow">
+<meta property="og:title" content="NoPostNow: a private photo feed for your circle">
+<meta property="og:description" content="Open-source, self-hosted social media for friends and family. Runs on a computer you own.">
+<meta property="og:image" content="https://nopostnow.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="NoPostNow: a private photo feed for your circle. Open source, self-hosted, invite-only.">
+<meta name="twitter:card" content="summary_large_image">
 <style>
   :root {
     --bg: #ffffff;
@@ -75,8 +79,9 @@
   .s-top b { font-weight: 800; font-size: 16px; letter-spacing: -0.03em; }
   .s-top span { display: flex; gap: 12px; }
   .post { padding: 8px 8px 2px; }
-  .photo { border-radius: 8px; aspect-ratio: 4 / 3; background: linear-gradient(160deg, #2b3a55, #7a5c6e 45%, #f0a56b); }
-  .photo.b { aspect-ratio: 16 / 9; background: linear-gradient(200deg, #1f3d33, #3f6b52 55%, #c9d28a); }
+  .photo { display: block; width: 100%; height: auto; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 8px; background: #1a1a1a; }
+  /* The next post is only just scrolling into view. */
+  .post.peek { height: 64px; overflow: hidden; padding-bottom: 0; }
   .who { display: flex; align-items: center; gap: 7px; padding: 8px 2px 2px; font-size: 12px; font-weight: 700; color: #fff; }
   .who i { width: 20px; height: 20px; border-radius: 50%; background: #1a1a1a; border: 1px solid #2a2a2a; }
   .who time { margin-left: auto; font-weight: 500; font-size: 10px; color: #8a8a8a; }
@@ -153,7 +158,7 @@
       <a class="btn" href="#setup">Set up</a>
     </div>
 
-    <div class="phone" role="img" aria-label="The feed on a phone: two photos from friends, with a caption, likes and comments.">
+    <div class="phone" role="img" aria-label="The feed on a phone: a friend's photo of cocktails and dessert, with a caption, likes and comments, and the next photo of two beers on a bar scrolling into view.">
       <div class="screen" aria-hidden="true">
         <div class="s-top">
           <b>NoPostNow</b>
@@ -163,17 +168,16 @@
           </span>
         </div>
         <div class="post">
-          <div class="photo"></div>
-          <div class="who"><i></i>sam<time>6:42 PM</time></div>
-          <p class="cap">made it to the top before sunset</p>
+          <img class="photo" src="/feed-table.jpg" width="560" height="420" alt="">
+          <div class="who"><i></i>jn<time>6:42 PM</time></div>
+          <p class="cap">espresso martinis all round</p>
           <div class="row">
             <span class="on"><svg viewBox="0 0 24 24"><path d="M12 21l-1.4-1.3C5.4 15 2 12 2 8.5A5.5 5.5 0 0112 5a5.5 5.5 0 0110 3.5c0 3.5-3.4 6.5-8.6 11.2z"/></svg>4</span>
             <svg viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 01-12.6 7.3L3 20l1.3-5.2A8.4 8.4 0 1121 11.5z"/></svg>2
           </div>
         </div>
-        <div class="post">
-          <div class="photo b"></div>
-          <div class="who"><i></i>riley<time>1:15 PM</time></div>
+        <div class="post peek">
+          <img class="photo" src="/feed-bar.jpg" width="560" height="420" alt="">
         </div>
         <div class="s-nav">
           <svg class="here" viewBox="0 0 24 24"><path d="M3 11l9-8 9 8v9a1 1 0 01-1 1h-5v-6H9v6H4a1 1 0 01-1-1z"/></svg>
